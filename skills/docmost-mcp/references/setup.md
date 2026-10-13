@@ -28,6 +28,8 @@ node /absolute/path/docmost-mcp-source/packages/mcp/dist/index.mjs --help
 
 核对 `--help` 列出 `--login`、`--logout` 和会话配置变量。只安装 MCP 包依赖，不安装整个工作区；不需要 pnpm、npm 发布或 `npm pack`。保留源码和根许可证。入口是 `/absolute/path/docmost-mcp-source/packages/mcp/dist/index.mjs`；包内测试可在包目录运行 `npm run --workspaces=false test`，不能代替目标公司部署验收。
 
+已有安装升级时，在客户端配置实际指向的源码目录核对 `git status --short`，保留本地改动；无冲突后 `git pull --ff-only`，在 `packages/mcp` 重新执行上述单包 install/build，并比较更新已授权作用域的 Skill。重启 MCP 连接重新发现工具，正常模式应为 22 个，只读模式为 10 个；旧进程或其他目录的构建不会自动更新当前连接。部署域名、默认空间/父页和仓库外凭据不需因升级重设。
+
 ## 用户本人在终端登录
 
 `DOCMOST_SESSION_FILE` 必须为仓库外的私有 JSON 绝对路径。建议为 `~/.config/docmost/session.json` 的实际绝对路径；shell 可用 `"$HOME/.config/docmost/session.json"` 展开，客户端配置须写绝对路径。CLI 管理私有目录和会话文件，POSIX 下目录 `0700`、当前用户所有的普通文件 `0600`，不支持符号链接。不要手写会话 JSON，也不要创建空文件供登录覆盖。
@@ -85,7 +87,7 @@ node /absolute/path/docmost-mcp-source/packages/mcp/dist/index.mjs --check
 
 ## 合并客户端配置
 
-用户已授权安装并选择作用域时，登记或合并配置，保留其他设置；同名 `docmost` 冲突先比较再让用户选择。配置只保存 URL、模式、私有文件路径、默认位置和启动命令，不含密码或会话值。默认 `DOCMOST_READ_ONLY=0` 提供十个工具，写入仍以用户的具体文档任务授权为限；只有用户选择只读连接时设 `1`，仅提供六个读取工具。
+用户已授权安装并选择作用域时，登记或合并配置，保留其他设置；同名 `docmost` 冲突先比较再让用户选择。配置只保存 URL、模式、私有文件路径、默认位置和启动命令，不含密码或会话值。默认 `DOCMOST_READ_ONLY=0` 注册 22 个工具（10 个读取、12 个写入），写入仍以用户的具体文档任务授权为限；只有用户选择只读连接时设 `1`，仅注册 10 个读取工具。重启后发现实际工具和 schema；旧版本可能缺少新工具，不硬编码固定清单。
 
 Claude Code 当前用户级示例；项目级按用户选择改用 `--scope local` / `--scope project`，有父页时加其环境变量项：
 
@@ -152,4 +154,6 @@ DOCMOST_READ_ONLY = "0"
 
 重启后用 `/mcp` 或工具列表检查，调用 `get_current_user` 核对身份及 `defaults`（`spaceId` UUID、`parentPageId` UUID 或 `null`），再 `get_space` 核对默认空间，按授权检索/读取页面。报告安装和配置位置、部署 URL、身份、空间及父页，不输出凭据。没有实际目标部署返回时如实说明未验证；创建测试页须已有写验收授权。403 表示当前用户权限不足，不改用管理员。会话 401 按上节交由用户重新登录。
 
-默认创建位置和写入行为见 [工具约定](tool-contract.md)。会话与 Key 模式均使用同一组十个工具和编辑器/Yjs 更新路径；安装授权不等于修改任意文档的授权。
+默认创建位置和各工具行为见 [工具约定](tool-contract.md)。会话与 Key 模式使用同一组工具和页面编辑器/Yjs 更新路径；安装授权不等于修改任意文档的授权。本地包对齐官方公开的 20 个工具能力，另保留两个软删除/恢复扩展，不复制企业 MCP 实现，也不解锁官方远程 `/mcp` 的许可功能。
+
+注册 22 个工具不能证明目标部署支持全部接口。`search_attachments` 需要目标服务器提供 `/api/search-attachments`；本 fork 新增了支持个人会话和页面权限检查的社区接口，公司原版可能返回 404。工具会明确报告 `UNSUPPORTED_DEPLOYMENT`，不能当作没有附件；仅在管理员合法部署支持版本后再验收，不通过数据库、浏览器或许可绕过补齐。

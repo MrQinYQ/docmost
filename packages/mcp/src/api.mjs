@@ -1,7 +1,42 @@
 import { ApiError } from './errors.mjs';
 export { ApiError } from './errors.mjs';
-const paths = new Set(['users/me', 'sessions', 'auth/logout', 'spaces', 'spaces/info', 'search', 'pages/recent', 'pages/info', 'pages/create', 'pages/update', 'pages/delete', 'pages/restore']);
+const paths = new Set([
+  'users/me', 'sessions', 'auth/logout', 'spaces', 'spaces/info', 'spaces/create', 'spaces/update',
+  'search', 'search-attachments', 'workspace/members', 'comments', 'comments/create', 'comments/update',
+  'pages/recent', 'pages/info', 'pages/sidebar-pages', 'pages/create', 'pages/update',
+  'pages/duplicate', 'pages/move', 'pages/move-to-space', 'pages/delete', 'pages/restore',
+]);
 const MAX_BYTES = 4 * 1024 * 1024;
+
+async function missingAttachmentRoute(response) {
+  // Inspect only a bounded routing-error marker; never surface upstream error bodies.
+  const maxBytes = 16 * 1024;
+  if (Number(response.headers.get('content-length')) > maxBytes) {
+    await response.body?.cancel();
+    return false;
+  }
+  const reader = response.body?.getReader();
+  if (!reader) return false;
+  let size = 0;
+  const chunks = [];
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > maxBytes) {
+        await reader.cancel();
+        return false;
+      }
+      chunks.push(value);
+    }
+  } finally { reader.releaseLock(); }
+  let error;
+  try { error = JSON.parse(Buffer.concat(chunks).toString('utf8')); }
+  catch { return false; }
+  return error?.message === 'Cannot POST /api/search-attachments'
+    || error?.message === 'Route POST:/api/search-attachments not found';
+}
 
 export function createApiClient(config, fetchImpl = globalThis.fetch) {
   function redact(value) { return value.split(config.token).join('[REDACTED]'); }
@@ -23,7 +58,15 @@ export function createApiClient(config, fetchImpl = globalThis.fetch) {
         signal,
       });
       if (!response.ok) {
-        await response.body?.cancel();
+        if (path === 'search-attachments' && response.status === 404) {
+          let missing = false;
+          try { missing = await missingAttachmentRoute(response); }
+          catch { signal.throwIfAborted(); }
+          if (missing)
+            throw failure('UNSUPPORTED_DEPLOYMENT', 'This deployment does not expose /api/search-attachments. Attachment search requires a compatible endpoint, provided by this fork.', 404);
+        }
+        // Error-body cleanup must not replace an already known HTTP status.
+        await response.body?.cancel().catch(() => {});
         const codes = { 400: 'INVALID_REQUEST', 401: 'UNAUTHENTICATED', 403: 'FORBIDDEN', 404: 'NOT_FOUND', 429: 'RATE_LIMITED' };
         const hints = {
           401: config.authMode === 'session'

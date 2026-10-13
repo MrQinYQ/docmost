@@ -115,6 +115,115 @@ test('401/403/429 and server failures return safe codes without upstream echo', 
   }
 });
 
+test('attachment 404 classification requires a bounded JSON routing marker and never echoes error bodies', async () => {
+  const marker = 'Cannot POST /api/search-attachments';
+  const upstreamSecret = 'synthetic-upstream-error-secret';
+  const cases = [
+    new Response(`<html>${marker} ${credential} ${upstreamSecret}</html>`, { status: 404 }),
+    Response.json({ message: `Resource missing ${credential} ${upstreamSecret}` }, { status: 404 }),
+    Response.json([{ message: marker, secretKey: upstreamSecret }], { status: 404 }),
+    new Response(JSON.stringify({ message: marker }), { status: 404, headers: { 'content-length': '16385' } }),
+    Response.json({ message: marker, padding: 'x'.repeat(16384), secretKey: upstreamSecret }, { status: 404 }),
+    Response.json({ message: marker, padding: '汉'.repeat(6000), secretKey: upstreamSecret }, { status: 404 }),
+  ];
+  for (const response of cases) {
+    let requests = 0;
+    const api = createApiClient(config, async () => { requests++; return response; });
+    await assert.rejects(api.post('search-attachments', { query: 'fixture' }), error => {
+      assert.equal(error.code, 'NOT_FOUND');
+      assert.equal(error.status, 404);
+      assert.equal(error.mayHaveSucceeded, false);
+      assert.ok(!error.message.includes(credential));
+      assert.ok(!error.message.includes(upstreamSecret));
+      assert.ok(!error.message.includes(marker));
+      return true;
+    });
+    assert.equal(requests, 1, 'attachment errors are not retried');
+  }
+});
+
+test('attachment 404 routing inspection stops and cancels the body when streaming bytes exceed its bound', async () => {
+  const encode = value => new TextEncoder().encode(value);
+  const chunks = [
+    encode('{"message":"Cannot POST /api/search-attachments","padding":"' + 'x'.repeat(9000)),
+    encode('x'.repeat(9000)),
+    encode('","secretKey":"' + credential + '"}'),
+  ];
+  let pulls = 0;
+  let cancelled = false;
+  const body = new ReadableStream({
+    pull(controller) {
+      const chunk = chunks[pulls++];
+      if (chunk) controller.enqueue(chunk);
+      else controller.close();
+    },
+    cancel() { cancelled = true; },
+  }, { highWaterMark: 0 });
+  const api = createApiClient(config, async () => new Response(body, { status: 404 }));
+  await assert.rejects(api.post('search-attachments', { query: 'fixture' }), error => {
+    assert.equal(error.code, 'NOT_FOUND');
+    assert.equal(error.status, 404);
+    assert.ok(!error.message.includes(credential));
+    return true;
+  });
+  assert.equal(cancelled, true, 'the API client cancels the excessive upstream body');
+  assert.equal(pulls, 2, 'the API client stops before requesting more error content');
+});
+
+test('failed 404 response streams retain the known HTTP failure without echoing or retrying', async () => {
+  for (const path of ['search-attachments', 'pages/info']) {
+    let requests = 0;
+    const api = createApiClient(config, async () => {
+      requests++;
+      return new Response(new ReadableStream({
+        start(controller) { controller.error(new Error(`Synthetic broken error body ${credential}`)); },
+      }), { status: 404 });
+    });
+    await assert.rejects(api.post(path, path === 'search-attachments' ? { query: 'fixture' } : { pageId: 'missing-page-fixture' }), error => {
+      assert.equal(error.code, 'NOT_FOUND', path);
+      assert.equal(error.status, 404, path);
+      assert.equal(error.mayHaveSucceeded, false, path);
+      assert.ok(!error.message.includes(credential), path);
+      assert.ok(!error.message.includes('Synthetic broken error body'), path);
+      return true;
+    });
+    assert.equal(requests, 1, `${path} does not retry a failed response body`);
+  }
+});
+
+test('attachment 404 routing inspection preserves timeout and client cancellation semantics', async () => {
+  const keepAlive = setTimeout(() => {}, 1000);
+  try {
+    for (const code of ['TIMEOUT', 'CANCELLED']) {
+      let requests = 0;
+      let aborted = 0;
+      const api = createApiClient({ ...config, timeoutMs: 100 }, async (_url, options) => {
+        requests++;
+        return new Response(new ReadableStream({
+          start(controller) {
+            options.signal.addEventListener('abort', () => {
+              aborted++;
+              controller.error(new Error(`Synthetic aborted error body ${credential}`));
+            }, { once: true });
+          },
+        }), { status: 404 });
+      });
+      const controller = new AbortController();
+      const request = api.post('search-attachments', { query: 'fixture' }, code === 'CANCELLED' ? controller.signal : undefined);
+      if (code === 'CANCELLED') controller.abort(new Error(credential));
+      await assert.rejects(request, error => {
+        assert.equal(error.code, code);
+        assert.equal(error.mayHaveSucceeded, false);
+        assert.ok(!error.message.includes(credential));
+        assert.ok(!error.message.includes('Synthetic aborted error body'));
+        return true;
+      });
+      assert.equal(aborted, 1, `${code} aborts the response stream`);
+      assert.equal(requests, 1, `${code} does not retry attachment search`);
+    }
+  } finally { clearTimeout(keepAlive); }
+});
+
 test('network errors are sanitized, mark uncertain writes, and never retry', async () => {
   let calls = 0;
   const api = createApiClient(config, async () => { calls++; throw new Error(`network ${credential}`); });

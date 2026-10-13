@@ -63,6 +63,20 @@ npm run --workspaces=false test
 
 保留源码和许可证。迁移机器时重新安装，并由用户在新机器重新登录；不要通过复制会话文件扩散凭据。
 
+### 更新已有安装
+
+在实际安装的源码目录中先检查 `git status --short`；有自己的改动时先处理，保留配置和仓库外的凭据文件。源码无冲突时执行：
+
+```bash
+cd /absolute/path/docmost-mcp-source
+git pull --ff-only
+cd packages/mcp
+npm install --workspaces=false
+npm run --workspaces=false build
+```
+
+如已安装 Skill，比较并更新授权作用域中的 Skill 文件。随后重启 Docmost MCP 连接，让客户端重新发现工具；运行中的旧进程不会自动加载新代码。正常模式应看到 22 个工具，只读模式为 10 个；仅在另一个目录构建不会更新客户端实际指向的安装。
+
 ## 3. 用户在自己的终端建立个人会话
 
 明确设置 `DOCMOST_AUTH_MODE=session`，并将 `DOCMOST_SESSION_FILE` 指向仓库外的私有 JSON 文件**绝对路径**。建议位置是 `~/.config/docmost/session.json`，shell 中用 `"$HOME/.config/docmost/session.json"` 展开为绝对路径；客户端配置应写实际绝对路径。
@@ -199,7 +213,7 @@ DOCMOST_READ_ONLY = "0"
 | `DOCMOST_API_TOKEN` | 仅 API Key 模式：由安全进程环境注入，不在配置、聊天或命令中填写明文。 |
 | `DOCMOST_DEFAULT_SPACE_ID` | 正常 stdio 启动和 `--check` 必填的默认空间 UUID；`--login` / `--logout` / `--list-spaces` 无需填写。 |
 | `DOCMOST_DEFAULT_PARENT_PAGE_ID` | 可选默认父页 UUID，须属于默认空间；不设置或为空表示根目录。 |
-| `DOCMOST_READ_ONLY` | 默认 `0`，注册十个读写工具；`1` 时仅注册六个读取工具。 |
+| `DOCMOST_READ_ONLY` | 默认 `0`，注册 22 个工具（10 个读取、12 个写入）；`1` 时仅注册 10 个读取工具。 |
 | `DOCMOST_TIMEOUT_MS` | 请求超时，默认 `30000` 毫秒，范围 `100`–`120000`。 |
 | `DOCMOST_ALLOW_LOCAL_HTTP` | 仅本机调试设为 `1`，允许 loopback HTTP；远程仍需 HTTPS。 |
 
@@ -240,17 +254,36 @@ cp -R /absolute/path/docmost-mcp-source/skills/docmost-mcp .agents/skills/docmos
 
 ## 工具与默认创建行为
 
-| 工具 | 用途 |
-| --- | --- |
-| `get_current_user` | 检查当前凭据用户和配置的 `defaults`。 |
-| `list_spaces` / `get_space` | 查找可访问空间与空间信息。 |
-| `search_pages` | 按关键词检索有权限的页面，获取真实页面 ID。 |
-| `list_pages` | 分页列出近期可访问页面，可按空间限制；不是目录树。 |
-| `get_page` | 读取页面及 Markdown/HTML 正文。 |
-| `create_page` | 在默认或指定空间/父页下创建页面。 |
-| `update_page` | 修改标题或正文。 |
-| `delete_page` | 软删除页面及其子页，内部固定 `permanentlyDelete: false`。 |
-| `restore_page` | 恢复页面及全部后代，包含此前已软删的后代；不恢复原分享链接。 |
+本地包对齐 [Docmost 官方 MCP 指南](https://docmost.com/docs/user-guide/mcp) 公开列出的 20 个工具能力，另保留 `delete_page` / `restore_page` 两个本地扩展，共 22 个工具。官方指南公布工具名称和用途，未公布输入 schema；本地输入依据本仓库实际 REST DTO 和权限检查实现，不声称与私有企业 MCP 实现完全一致。官方远程 `/mcp` 的许可与 OAuth 接入要求仍按官方指南执行；本地 stdio 的个人会话方式见前文。
+
+客户端可能给工具名称加前缀，应发现当前连接实际提供的工具，并以其 schema 为准；不能把旧版十工具清单当作固定接口。注册工具不代表目标部署的每个后端接口都可用。
+
+| 工具 | 读写 | 来源 | 用途 |
+| --- | --- | --- | --- |
+| `search_pages` | 读取 | 官方 | 按关键词检索有权限的页面，获取真实页面 ID。 |
+| `get_page` | 读取 | 官方 | 读取页面及 Markdown/HTML/编辑器 JSON 正文。 |
+| `create_page` | 写入 | 官方 | 在默认或指定空间/父页下创建页面。 |
+| `update_page` | 写入 | 官方 | 修改标题或正文。 |
+| `list_pages` | 读取 | 官方 | 分页列出近期可访问页面，可按空间限制；不是目录树。 |
+| `list_child_pages` | 读取 | 官方 | 分页列出指定页面的可见直接子页；按需继续读取各层。 |
+| `duplicate_page` | 写入 | 官方 | 在同一空间复制页面。 |
+| `copy_page_to_space` | 写入 | 官方 | 将页面及可访问子树复制到另一个空间。 |
+| `move_page` | 写入 | 官方 | 调整页面位置或父页。 |
+| `move_page_to_space` | 写入 | 官方 | 将页面及可访问子树移动到另一个空间。 |
+| `get_space` | 读取 | 官方 | 获取可访问空间的信息。 |
+| `list_spaces` | 读取 | 官方 | 分页查找可访问空间。 |
+| `create_space` | 写入 | 官方 | 创建空间。 |
+| `update_space` | 写入 | 官方 | 更新空间名称或描述。 |
+| `get_comments` | 读取 | 官方 | 读取页面评论。 |
+| `create_comment` | 写入 | 官方 | 向页面添加评论。 |
+| `update_comment` | 写入 | 官方 | 更新评论。 |
+| `search_attachments` | 读取 | 官方 | 检索当前用户可见的文件附件；需要目标部署提供对应接口。 |
+| `list_workspace_members` | 读取 | 官方 | 分页列出当前账号可查询的工作区成员。 |
+| `get_current_user` | 读取 | 官方 | 检查当前凭据用户和配置的 `defaults`。 |
+| `delete_page` | 写入 | 本地扩展 | 软删除页面及其子页，内部固定 `permanentlyDelete: false`。 |
+| `restore_page` | 写入 | 本地扩展 | 恢复页面及全部后代，包含此前已软删的后代；不恢复原分享链接。 |
+
+`search_attachments` 请求 `/api/search-attachments`。本 fork 增加了支持个人会话和页面权限过滤的社区接口；仅安装本地 MCP 不会给公司原版服务器增加该接口。原版或较旧部署可能缺少该路由；工具确认是路由不存在时返回 `UNSUPPORTED_DEPLOYMENT`，普通资源 404 仍返回 `NOT_FOUND`，不能解释成“没有附件”或宣称已验收全部能力。需要时由管理员合法部署包含该接口的版本；不通过数据库、浏览器抓取或绕过企业许可补齐能力。
 
 `create_page` 省略 `spaceId` 时使用默认空间；省略 `parentPageId` 且目标是默认空间时使用默认父页。默认父页未设置就是空间根目录。显式 `parentPageId: null` 表示在目标空间根目录创建；明确指定其他空间时不继承默认父页，省略父页即在该空间根目录创建。显式父页必须属于目标空间。默认位置不限制 账号的访问范围，读取或写入其他空间仍须符合服务器权限和用户任务范围。
 
@@ -266,9 +299,13 @@ cp -R /absolute/path/docmost-mcp-source/skills/docmost-mcp .agents/skills/docmos
 
 可直接向助手提出“搜索‘发布流程’，给我页面链接并总结”“在这篇已找到的页面末尾追加以下段落”“把正文替换为以下 Markdown”。服务器始终按 当前账号权限校验。正文更新走 `/pages/update` 的编辑器/Yjs 同步流程，不通过数据库 SQL 替换。
 
-正文为非空 Markdown 或 HTML，默认 Markdown；不支持空字符串清空。`update_page` 带 `content` 时必须明确 `operation: "append" | "prepend" | "replace"`，仅改标题不需要正文操作。页面 ID 来自检索或列表，不凭标题猜测。删除和恢复只接受规范 UUID `id`，不能使用 URL 中的 slugId。空间列表和近期页面按 `meta.nextCursor` 翻页；搜索使用 `limit/offset`，没有搜索游标。
+正文为非空 Markdown 或 HTML，默认 Markdown；不支持空字符串清空。`update_page` 带 `content` 时必须明确 `operation: "append" | "prepend" | "replace"`，仅改标题不需要正文操作。页面 ID 来自检索或列表，不凭标题猜测。删除和恢复只接受规范 UUID `id`，不能使用 URL 中的 slugId。列表按实际返回的 `meta.nextCursor` 翻页；页面和附件搜索使用 `limit/offset`，没有搜索游标。
 
-删除影响整棵子树并移除分享链接。恢复会递归恢复全部后代，包括此次删除前就已软删的后代；原分享链接不会恢复。现有工具不能完整枚举子树，删除或恢复都需要用户明确授权整个受影响子树，不能把近期列表中没有子页视为没有子页。写操作限于用户请求的对象；超时可能已在服务器生效，应先读取核对，尤其不要盲目重试创建或追加。
+`move_page` 必须显式提供 `parentPageId` 和 `position`：同父页重排传当前父页 ID，移动到空间根目录传 `null`；`position` 是 5–12 位排序字符串，不是数字序号。跨空间复制或移动影响子树，先核对源页面、目标空间、目标位置及用户对整个范围的授权；不要从单页阅读授权推导跨空间传播或移动权限。评论写入只接收非空纯文本 `text`，包装层转换为编辑器 JSON；不解析 HTML 或 Markdown，不开放 inline selection 或富文本输入。评论、空间和页面写入后使用对应读取工具核对结果。
+
+复制读取服务器已保存快照，不保证包含协作编辑器尚未落库的修改；同空间副本保留原父位置，跨空间副本位于目标根目录。副本不继承源页评论或页面访问限制，须确认目标空间的可见范围；成功响应也不能证明每个附件均已复制。跨空间移动只移动可访问子树，无权访问的子树会留在原空间并脱离为根。按用户授权核对受影响页面，不宣称逐页验证不可见后代。
+
+删除影响整棵子树并移除分享链接。恢复会递归恢复全部后代，包括此次删除前就已软删的后代；原分享链接不会恢复。`list_child_pages` 可按需分页查看可见子页，但权限过滤会隐藏无权读取的后代，不能证明没有隐藏子页，也不能可靠枚举待恢复的软删后代。删除或恢复都需要用户明确授权整个受影响子树，不能把近期列表或子页列表没有结果视为没有子页。写操作限于用户请求的对象；超时可能已在服务器生效，应先读取核对，尤其不要盲目重试创建、复制、评论或追加。
 
 ## 排错、验收范围与许可证
 
@@ -287,11 +324,14 @@ cp -R /absolute/path/docmost-mcp-source/skills/docmost-mcp .agents/skills/docmos
 | 缺少默认空间或 UUID 错误 | `--list-spaces` 取得真实 UUID；正常启动/`--check` 必填。 |
 | 默认父页检查失败 | 父页须 UUID、属于默认空间且未删除；无父页则移除变量。 |
 | 404、TLS 或超时错误 | 核对根 URL（不加 `/api`）、版本、网络和证书；保留 HTTPS 证书校验。 |
+| `search_attachments` 返回 `UNSUPPORTED_DEPLOYMENT` | 目标服务器缺少附件搜索接口；本地 MCP 安装不会更新服务器。由管理员合法部署支持 `/api/search-attachments` 的版本，不当作空结果。 |
 | Node 无法启动或缺写工具 | 核对 Node 22+ 绝对路径和 `dist/index.mjs`；需要写工具时检查 `DOCMOST_READ_ONLY`。 |
 
 正常 stdio 启动后进程等待 MCP 协议输入；登录交互只属于单独的 `--login` 命令。不要向 stdout 添加调试输出；诊断写 stderr，避免凭据和完整请求头。
 
-本次完整构建与回归测试为 **79/79 通过**，包含原 API Key 模式、社区会话、真实 stdio/CLI 模拟服务、隐藏终端输入、过期和并发注销保护。GitHub 单包安装布局也通过同组测试。本地真实社区版完成了终端密码登录、`0600` 会话存储、身份与默认空间校验、reader 权限拒绝，以及 writer 通过真实 stdio MCP 创建、追加、读回和软删除测试文档；注销后凭据重放返回 401，专用测试会话已清理。
+2026-10-13 工具对齐后的完整构建与回归测试为 **91/91 通过**，独立 GitHub 单包安装布局也通过同组测试。覆盖 22/10 工具发现、严格参数、REST 请求和投影、复制/移动预读、评论换行、附件路由能力检测及响应上限，以及既有 API Key、个人会话、终端隐藏输入、过期和并发注销保护。
+
+新增 12 工具已在独立本地社区版通过真实个人会话与 stdio 验收，**29/29 检查通过**：复制与移动子树后读回，创建/更新空间，评论/回复/作者更新，附件和成员检索；reader 的 8 个新增写工具均返回 403，管理员修改 writer 评论也返回 403，受限子页和评论不可读，向无权目标空间复制/移动被拒绝。测试创建的评论、页面和空间已清理，三个专用会话注销后重放均返回 401，会话文件已删除。此前还完成了终端密码登录、`0600` 会话存储、默认空间校验，以及通过真实 stdio 创建、追加、读回和软删除的验收。真实验收使用本机合成测试账号，没有修改公司文档。
 
 以上不能代替目标公司部署验收。真实公司接入需要用户在本机亲自登录，再用 `--list-spaces`、`--check` 和已授权客户端查询确认。页面写入、删除和恢复须分别在用户授权范围验证；未执行时如实标记未验收。当前密码登录模式不完成 SSO/MFA，也不接受旧版无 `sessionId` 的不可撤销凭据。
 

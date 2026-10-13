@@ -14,14 +14,24 @@ const PAGE_ID = '00000000-0000-4000-8000-000000000003';
 const PARENT_ID = '00000000-0000-4000-8000-000000000004';
 const OTHER_SPACE_ID = '00000000-0000-4000-8000-000000000005';
 const OTHER_PARENT_ID = '00000000-0000-4000-8000-000000000006';
+const COMMENT_ID = '00000000-0000-4000-8000-000000000007';
+const ATTACHMENT_ID = '00000000-0000-4000-8000-000000000008';
+const CHILD_ID = '00000000-0000-4000-8000-000000000009';
+const COPY_ID = '00000000-0000-4000-8000-00000000000a';
 const READ_TOOLS = [
   'get_current_user', 'list_spaces', 'get_space', 'search_pages',
-  'list_pages', 'get_page',
+  'list_pages', 'get_page', 'list_child_pages', 'get_comments',
+  'search_attachments', 'list_workspace_members',
 ];
-const WRITE_TOOLS = ['create_page', 'update_page', 'delete_page', 'restore_page'];
+const WRITE_TOOLS = [
+  'create_page', 'update_page', 'delete_page', 'restore_page',
+  'duplicate_page', 'copy_page_to_space', 'move_page', 'move_page_to_space',
+  'create_space', 'update_space', 'create_comment', 'update_comment',
+];
 const PRIVATE_VALUES = [
   'fixture-password-hash', 'fixture-reset-secret', 'fixture-mfa-secret',
   'fixture-api-key-secret', 'fixture-license-secret',
+  'fixture-secret-key',
 ];
 
 function pagePayload(content = '# Fixture page') {
@@ -62,19 +72,41 @@ function defaultPayload(path, body) {
     case '/api/spaces':
       return { items: [{ id: SPACE_ID, name: 'Fixture space' }], meta: { hasNextPage: false } };
     case '/api/spaces/info':
-      return { id: SPACE_ID, name: 'Fixture space', slug: 'fixture-space' };
+      return { id: body.spaceId === OTHER_SPACE_ID ? OTHER_SPACE_ID : SPACE_ID, name: 'Fixture space', slug: 'fixture-space' };
+    case '/api/spaces/create':
+    case '/api/spaces/update':
+      return { id: SPACE_ID, name: body.name ?? 'Fixture space', slug: body.slug ?? 'fixture-space', description: body.description };
     case '/api/search':
       return { items: [pagePayload()], total: 1 };
     case '/api/pages/recent':
       return { items: [pagePayload()], meta: { hasNextPage: false } };
+    case '/api/pages/sidebar-pages':
+      return { items: [{ ...pagePayload(), id: CHILD_ID, parentPageId: PAGE_ID }], meta: { hasNextPage: false } };
     case '/api/pages/info':
-      return pagePayload(body.format === 'json' ? { type: 'doc', content: [] } : '# Fixture page');
+      return {
+        ...pagePayload(body.format === 'json' ? { type: 'doc', content: [] } : '# Fixture page'),
+        ...([PARENT_ID, 'chosen-parent-slug'].includes(body.pageId) ? { id: PARENT_ID } : {}),
+        ...(body.pageId === OTHER_PARENT_ID ? { id: OTHER_PARENT_ID, spaceId: OTHER_SPACE_ID, space: { id: OTHER_SPACE_ID, name: 'Other fixture space', slug: 'other-fixture-space' } } : {}),
+      };
     case '/api/pages/create':
     case '/api/pages/update':
     case '/api/pages/restore':
       return pagePayload();
+    case '/api/pages/duplicate':
+      return { ...pagePayload(), id: COPY_ID, childPageIds: [CHILD_ID] };
     case '/api/pages/delete':
+    case '/api/pages/move':
+    case '/api/pages/move-to-space':
       return undefined;
+    case '/api/comments':
+      return { items: [{ id: COMMENT_ID, pageId: PAGE_ID, content: { type: 'doc', content: [] }, creator: { id: USER_ID, name: 'Fixture user' } }], meta: { hasNextPage: false } };
+    case '/api/comments/create':
+    case '/api/comments/update':
+      return { id: COMMENT_ID, pageId: body.pageId ?? PAGE_ID, content: JSON.parse(body.content), parentCommentId: body.parentCommentId, creator: { id: USER_ID, name: 'Fixture user' } };
+    case '/api/search-attachments':
+      return { items: [{ id: ATTACHMENT_ID, fileName: 'fixture.txt', pageId: PAGE_ID, creatorId: USER_ID }], total: 1 };
+    case '/api/workspace/members':
+      return { items: [{ id: USER_ID, name: 'Fixture user', email: 'fixture@example.invalid', role: 'member', avatarUrl: null }], meta: { hasNextPage: false } };
     default:
       throw new Error(`Unexpected fixture route: ${path}`);
   }
@@ -277,7 +309,7 @@ async function harness(t, overrides = {}) {
   return { fixture, rpc };
 }
 
-test('stdio initializes and advertises exactly ten strict tools', { timeout: 10000 }, async t => {
+test('stdio initializes and advertises twenty official tools plus recoverable delete and restore', { timeout: 10000 }, async t => {
   const { rpc } = await harness(t);
   const reply = await rpc.request('tools/list');
   assert.equal(reply.error, undefined);
@@ -287,6 +319,284 @@ test('stdio initializes and advertises exactly ten strict tools', { timeout: 100
     assert.equal(tool.inputSchema.type, 'object', tool.name);
     assert.equal(tool.inputSchema.additionalProperties, false, `${tool.name} rejects additional properties`);
     assert.equal(tool.inputSchema.properties.userId, undefined, `${tool.name} must not accept caller identity`);
+    assert.equal(tool.annotations.readOnlyHint, READ_TOOLS.includes(tool.name), tool.name);
+    if (['move_page', 'move_page_to_space'].includes(tool.name)) assert.equal(tool.annotations.destructiveHint, true, tool.name);
+    if (['duplicate_page', 'copy_page_to_space'].includes(tool.name)) assert.equal(tool.annotations.destructiveHint, false, tool.name);
+  }
+});
+
+test('new official tools use authenticated routes and explicit move and copy destinations', { timeout: 15000 }, async t => {
+  const { fixture, rpc } = await harness(t, { DOCMOST_DEFAULT_PARENT_PAGE_ID: OTHER_PARENT_ID });
+  const cases = [
+    ['duplicate_page', { pageId: 'fixture-page-slug' }, '/api/pages/duplicate', { pageId: 'fixture-page-slug' }],
+    ['copy_page_to_space', { pageId: 'fixture-page-slug', spaceId: OTHER_SPACE_ID }, '/api/pages/duplicate', { pageId: PAGE_ID, spaceId: OTHER_SPACE_ID }],
+    ['move_page', { pageId: 'fixture-page-slug', parentPageId: null, position: 'a0000' }, '/api/pages/move', { pageId: PAGE_ID, parentPageId: null, position: 'a0000' }],
+    ['move_page', { pageId: PAGE_ID, parentPageId: 'chosen-parent-slug', position: 'a00000000000' }, '/api/pages/move', { pageId: PAGE_ID, parentPageId: PARENT_ID, position: 'a00000000000' }],
+    ['move_page_to_space', { pageId: 'fixture-page-slug', spaceId: OTHER_SPACE_ID }, '/api/pages/move-to-space', { pageId: PAGE_ID, spaceId: OTHER_SPACE_ID }],
+    ['create_space', { name: '  Created space  ', slug: 'created_space-2', description: 'A fixture space' }, '/api/spaces/create', { name: 'Created space', slug: 'created_space-2', description: 'A fixture space' }],
+    ['update_space', { spaceId: SPACE_ID, name: '  Renamed space  ' }, '/api/spaces/update', { spaceId: SPACE_ID, name: 'Renamed space' }],
+    ['update_space', { spaceId: SPACE_ID, description: '' }, '/api/spaces/update', { spaceId: SPACE_ID, description: '' }],
+    ['get_comments', { pageId: PAGE_ID, limit: 5, cursor: 'comment-cursor' }, '/api/comments', { pageId: PAGE_ID, limit: 5, cursor: 'comment-cursor' }],
+    ['search_attachments', { query: '  needle  ', spaceId: SPACE_ID, creatorId: USER_ID, limit: 7, offset: 2 }, '/api/search-attachments', { query: 'needle', spaceId: SPACE_ID, creatorId: USER_ID, limit: 7, offset: 2 }],
+    ['list_workspace_members', { query: 'Fixture', limit: 8, cursor: 'member-cursor' }, '/api/workspace/members', { query: 'Fixture', limit: 8, cursor: 'member-cursor' }],
+  ];
+  for (const [name, input, path, expected] of cases) {
+    const before = fixture.calls.length;
+    const result = toolData(await rpc.call(name, input));
+    const preflight = name === 'move_page' ? [
+      { path: '/api/pages/info', body: { pageId: input.pageId } },
+      ...(input.parentPageId ? [{ path: '/api/pages/info', body: { pageId: input.parentPageId } }] : []),
+    ] : ['copy_page_to_space', 'move_page_to_space'].includes(name) ? [
+      { path: '/api/pages/info', body: { pageId: input.pageId } },
+      { path: '/api/spaces/info', body: { spaceId: OTHER_SPACE_ID } },
+    ] : [];
+    assert.deepEqual(fixture.calls.slice(before).map(call => ({ path: call.path, body: call.body })), [...preflight, { path, body: expected }], name);
+    const call = fixture.calls.at(-1);
+    assert.equal(call.method, 'POST', name);
+    assert.equal(call.path, path, name);
+    assert.equal(call.headers.authorization, `Bearer ${TOKEN}`, name);
+    assert.match(call.headers['content-type'], /application\/json/, name);
+    assert.deepEqual(call.body, expected, name);
+    if (name.startsWith('move_page')) {
+      assert.equal(result.success, true, name);
+      assert.equal(result.pageId, PAGE_ID, name);
+    }
+    if (['duplicate_page', 'copy_page_to_space'].includes(name)) {
+      assert.equal(result.id, COPY_ID, name);
+      assert.deepEqual(result.childPageIds, [CHILD_ID], name);
+    }
+  }
+  for (const call of fixture.calls) assert.equal(call.headers.authorization, `Bearer ${TOKEN}`, call.path);
+});
+
+test('child page listing resolves a parent slug to its canonical page and space and preserves pagination', { timeout: 10000 }, async t => {
+  const { fixture, rpc } = await harness(t);
+  fixture.respond = (call, response) => {
+    if (call.path !== '/api/pages/sidebar-pages') return false;
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({ data: {
+      items: [{ ...pagePayload(), id: CHILD_ID, parentPageId: PAGE_ID, hasChildren: true, isBase: false, secretKey: PRIVATE_VALUES[5] }],
+      meta: { limit: 3, hasNextPage: true, hasPrevPage: false, nextCursor: 'next-child-cursor', secretKey: PRIVATE_VALUES[5] },
+    }, success: true }));
+    return true;
+  };
+  const result = toolData(await rpc.call('list_child_pages', { pageId: 'parent-page-slug', limit: 3, cursor: 'child-cursor' }));
+  assert.deepEqual(fixture.calls.map(call => ({ path: call.path, body: call.body })), [
+    { path: '/api/pages/info', body: { pageId: 'parent-page-slug' } },
+    { path: '/api/pages/sidebar-pages', body: { pageId: PAGE_ID, spaceId: SPACE_ID, limit: 3, cursor: 'child-cursor' } },
+  ]);
+  assert.deepEqual(result.items, [{ ...pagePayload(), id: CHILD_ID, parentPageId: PAGE_ID, hasChildren: true, isBase: false }]);
+  assert.deepEqual(result.meta, { limit: 3, hasNextPage: true, hasPrevPage: false, nextCursor: 'next-child-cursor' });
+  assert.ok(!JSON.stringify(result).includes(PRIVATE_VALUES[5]));
+});
+
+test('plain-text comments preserve every newline and literal HTML when serialized for Docmost', { timeout: 10000 }, async t => {
+  const { fixture, rpc } = await harness(t);
+  const text = '<b>literal</b>\r\nsecond\n\nlast\r';
+  const expectedDocument = { type: 'doc', content: [
+    { type: 'paragraph', content: [{ type: 'text', text: '<b>literal</b>' }] },
+    { type: 'paragraph', content: [{ type: 'text', text: 'second' }] },
+    { type: 'paragraph' },
+    { type: 'paragraph', content: [{ type: 'text', text: 'last' }] },
+    { type: 'paragraph' },
+  ] };
+  const created = toolData(await rpc.call('create_comment', { pageId: 'fixture-page-slug', parentCommentId: COMMENT_ID, text }));
+  assert.equal(created.id, COMMENT_ID);
+  assert.deepEqual(created.content, expectedDocument);
+  const updated = toolData(await rpc.call('update_comment', { commentId: COMMENT_ID, text: 'Revised comment' }));
+  assert.equal(updated.id, COMMENT_ID);
+  assert.deepEqual(fixture.calls.map(call => ({ path: call.path, body: call.body })), [
+    { path: '/api/comments/create', body: { pageId: 'fixture-page-slug', parentCommentId: COMMENT_ID, content: JSON.stringify(expectedDocument) } },
+    { path: '/api/comments/update', body: { commentId: COMMENT_ID, content: '{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"Revised comment"}]}]}' } },
+  ]);
+  for (const call of fixture.calls) {
+    assert.equal(call.headers.authorization, `Bearer ${TOKEN}`);
+    assert.equal(call.body.text, undefined, 'only serialized editor content reaches Docmost');
+  }
+});
+
+test('official readers send pagination and search defaults to the server', { timeout: 10000 }, async t => {
+  const { fixture, rpc } = await harness(t);
+  toolData(await rpc.call('list_child_pages', { pageId: PAGE_ID }));
+  toolData(await rpc.call('get_comments', { pageId: PAGE_ID }));
+  const attachments = toolData(await rpc.call('search_attachments', { query: 'needle' }));
+  toolData(await rpc.call('list_workspace_members'));
+  assert.deepEqual(fixture.calls.map(call => ({ path: call.path, body: call.body })), [
+    { path: '/api/pages/info', body: { pageId: PAGE_ID } },
+    { path: '/api/pages/sidebar-pages', body: { pageId: PAGE_ID, spaceId: SPACE_ID, limit: 20 } },
+    { path: '/api/comments', body: { pageId: PAGE_ID, limit: 20 } },
+    { path: '/api/search-attachments', body: { query: 'needle', limit: 20, offset: 0 } },
+    { path: '/api/workspace/members', body: { limit: 20 } },
+  ]);
+  assert.equal(attachments.limit, 20);
+  assert.equal(attachments.offset, 0);
+});
+
+test('member, comment and attachment projections retain useful results while omitting private fields', { timeout: 10000 }, async t => {
+  const { fixture, rpc } = await harness(t);
+  const privateFields = { password: PRIVATE_VALUES[0], resetPasswordToken: PRIVATE_VALUES[1], mfaSecret: PRIVATE_VALUES[2], apiKey: PRIVATE_VALUES[3], licenseKey: PRIVATE_VALUES[4], secretKey: PRIVATE_VALUES[5] };
+  fixture.respond = (call, response) => {
+    let payload;
+    const meta = { limit: 2, hasNextPage: true, hasPrevPage: false, nextCursor: 'next-fixture-cursor', ...privateFields };
+    if (call.path === '/api/workspace/members') payload = {
+      items: [{ id: USER_ID, name: 'Fixture user', email: 'fixture@example.invalid', role: 'member', avatarUrl: null, ...privateFields }], meta,
+    };
+    else if (call.path === '/api/comments') payload = {
+      items: [{ id: COMMENT_ID, pageId: PAGE_ID, content: { type: 'doc', content: [] }, parentCommentId: null, type: 'page', createdAt: '2026-10-12T00:00:00.000Z', editedAt: null, resolvedAt: null, creator: { id: USER_ID, name: 'Fixture user', email: 'private@example.invalid', ...privateFields }, ...privateFields }], meta,
+    };
+    else if (call.path === '/api/search-attachments') payload = {
+      items: [{ id: ATTACHMENT_ID, fileName: 'fixture.txt', pageId: PAGE_ID, creatorId: USER_ID, createdAt: '2026-10-12T00:00:00.000Z', updatedAt: '2026-10-13T00:00:00.000Z', highlight: 'fixture', rank: 0.5, path: '/private/blob', downloadUrl: 'https://untrusted.example.invalid/blob', space: { id: SPACE_ID, name: 'Fixture space', slug: 'fixture-space', ...privateFields }, page: { id: PAGE_ID, title: 'Fixture page', slugId: 'fixture-page', ...privateFields }, ...privateFields }], total: 100, ...privateFields,
+    };
+    else return false;
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({ data: payload, success: true }));
+    return true;
+  };
+  const members = toolData(await rpc.call('list_workspace_members', { limit: 2, cursor: 'member-cursor', query: 'Fixture' }));
+  assert.deepEqual(members, {
+    items: [{ id: USER_ID, name: 'Fixture user', email: 'fixture@example.invalid', role: 'member', avatarUrl: null }],
+    meta: { limit: 2, hasNextPage: true, hasPrevPage: false, nextCursor: 'next-fixture-cursor' },
+  });
+  const comments = toolData(await rpc.call('get_comments', { pageId: PAGE_ID, limit: 2, cursor: 'comment-cursor' }));
+  assert.deepEqual(comments, {
+    items: [{ id: COMMENT_ID, pageId: PAGE_ID, content: { type: 'doc', content: [] }, parentCommentId: null, type: 'page', createdAt: '2026-10-12T00:00:00.000Z', editedAt: null, resolvedAt: null, creator: { id: USER_ID, name: 'Fixture user' } }],
+    meta: { limit: 2, hasNextPage: true, hasPrevPage: false, nextCursor: 'next-fixture-cursor' },
+  });
+  const attachments = toolData(await rpc.call('search_attachments', { query: 'fixture', limit: 2, offset: 4 }));
+  assert.deepEqual(attachments, { items: [{ id: ATTACHMENT_ID, fileName: 'fixture.txt', pageId: PAGE_ID, creatorId: USER_ID, createdAt: '2026-10-12T00:00:00.000Z', updatedAt: '2026-10-13T00:00:00.000Z', space: { id: SPACE_ID, name: 'Fixture space', slug: 'fixture-space' }, page: { id: PAGE_ID, title: 'Fixture page', slugId: 'fixture-page' } }], limit: 2, offset: 4 });
+  for (const secret of PRIVATE_VALUES) assert.ok(!JSON.stringify([members, comments, attachments]).includes(secret));
+});
+
+test('new tools reject malformed IDs, unsafe move omissions and invalid input without HTTP', { timeout: 15000 }, async t => {
+  const { fixture, rpc } = await harness(t);
+  const valid = [
+    ['list_child_pages', { pageId: PAGE_ID }],
+    ['duplicate_page', { pageId: PAGE_ID }],
+    ['copy_page_to_space', { pageId: PAGE_ID, spaceId: OTHER_SPACE_ID }],
+    ['move_page', { pageId: PAGE_ID, parentPageId: null, position: 'a0000' }],
+    ['move_page_to_space', { pageId: PAGE_ID, spaceId: OTHER_SPACE_ID }],
+    ['create_space', { name: 'Fixture', slug: 'fixture' }],
+    ['update_space', { spaceId: SPACE_ID, name: 'Fixture' }],
+    ['get_comments', { pageId: PAGE_ID }],
+    ['create_comment', { pageId: PAGE_ID, text: 'Fixture' }],
+    ['update_comment', { commentId: COMMENT_ID, text: 'Fixture' }],
+    ['search_attachments', { query: 'Fixture' }],
+    ['list_workspace_members', {}],
+  ];
+  for (const [name, input] of valid) {
+    assertToolError(await rpc.call(name, { ...input, userId: USER_ID }), undefined);
+    assertToolError(await rpc.call(name, { ...input, baseUrl: 'https://untrusted.example.invalid' }), undefined);
+  }
+  const invalid = [
+    ['list_child_pages', { pageId: '', limit: 2 }],
+    ['list_child_pages', { pageId: PAGE_ID, limit: 0 }],
+    ['duplicate_page', { pageId: PAGE_ID, spaceId: OTHER_SPACE_ID }],
+    ['copy_page_to_space', { pageId: PAGE_ID }],
+    ['copy_page_to_space', { pageId: PAGE_ID, spaceId: 'destination-slug' }],
+    ['move_page', { pageId: PAGE_ID, position: 'a0000' }],
+    ['move_page', { pageId: PAGE_ID, parentPageId: null, position: 0 }],
+    ['move_page', { pageId: PAGE_ID, parentPageId: null, position: 'abcd' }],
+    ['move_page', { pageId: PAGE_ID, parentPageId: null, position: 'a'.repeat(13) }],
+    ['move_page', { pageId: PAGE_ID, parentPageId: '', position: 'a0000' }],
+    ['move_page_to_space', { pageId: PAGE_ID, spaceId: 'destination-slug' }],
+    ['create_space', { name: ' ', slug: 'ok' }],
+    ['create_space', { name: 'x', slug: 'ok' }],
+    ['create_space', { name: 'x'.repeat(101), slug: 'ok' }],
+    ['create_space', { name: 'Fixture', slug: '-unsafe' }],
+    ['create_space', { name: 'Fixture', slug: 'a' }],
+    ['create_space', { name: 'Fixture', slug: 'a'.repeat(101) }],
+    ['create_space', { name: 'Fixture', slug: 'bad/slug' }],
+    ['update_space', { spaceId: SPACE_ID }],
+    ['update_space', { spaceId: SPACE_ID, name: ' ' }],
+    ['update_space', { spaceId: SPACE_ID, slug: 'renamed-slug' }],
+    ['get_comments', { pageId: PAGE_ID, cursor: '' }],
+    ['create_comment', { pageId: PAGE_ID }],
+    ['create_comment', { pageId: PAGE_ID, text: '' }],
+    ['create_comment', { pageId: PAGE_ID, text: ' \n\t' }],
+    ['create_comment', { pageId: PAGE_ID, text: 'Fixture', parentCommentId: 'comment-slug' }],
+    ['create_comment', { pageId: PAGE_ID, text: 'Fixture', content: { type: 'doc', content: [] } }],
+    ['create_comment', { pageId: PAGE_ID, content: { type: 'doc', content: [] } }],
+    ['update_comment', { commentId: COMMENT_ID }],
+    ['update_comment', { commentId: 'comment-slug', text: 'Fixture' }],
+    ['update_comment', { commentId: COMMENT_ID, text: ' \n\t' }],
+    ['update_comment', { commentId: COMMENT_ID, text: 'Fixture', content: { type: 'doc', content: [] } }],
+    ['update_comment', { commentId: COMMENT_ID, content: { type: 'doc', content: [] } }],
+    ['search_attachments', { query: ' ' }],
+    ['search_attachments', { query: 'Fixture', creatorId: 'creator-name' }],
+    ['search_attachments', { query: 'Fixture', limit: 101 }],
+    ['search_attachments', { query: 'Fixture', offset: -1 }],
+    ['list_workspace_members', { limit: 0 }],
+    ['list_workspace_members', { cursor: '' }],
+    ['list_workspace_members', { query: 'x'.repeat(201) }],
+  ];
+  for (const [name, input] of invalid) assertToolError(await rpc.call(name, input));
+  assert.deepEqual(fixture.calls, [], 'invalid inputs never reach the configured deployment');
+});
+
+test('attachment capability absence is an explicit deployment error and generic permission failures stay forbidden', { timeout: 10000 }, async t => {
+  const { fixture, rpc } = await harness(t);
+  for (const [message, expectedCode] of [
+    ['Cannot POST /api/search-attachments', /UNSUPPORTED_DEPLOYMENT/],
+    ['Route POST:/api/search-attachments not found', /UNSUPPORTED_DEPLOYMENT/],
+    [`Fixture attachment was not found ${PRIVATE_VALUES[5]}`, /NOT_FOUND/],
+  ]) {
+    fixture.respond = (call, response) => {
+      assert.equal(call.path, '/api/search-attachments');
+      response.writeHead(404, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ message, secretKey: PRIVATE_VALUES[5] }));
+      return true;
+    };
+    const before = fixture.calls.length;
+    const reply = await rpc.call('search_attachments', { query: 'fixture' });
+    assertToolError(reply, expectedCode);
+    assert.equal(fixture.calls.length, before + 1, 'missing routes and resources are not retried');
+    assert.ok(!JSON.stringify(reply).includes(PRIVATE_VALUES[5]));
+  }
+  fixture.respond = (_call, response) => {
+    response.writeHead(403, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({ message: `Forbidden fixture ${TOKEN} ${PRIVATE_VALUES[5]}` }));
+    return true;
+  };
+  for (const [name, input] of [
+    ['search_attachments', { query: 'fixture' }],
+    ['list_workspace_members', {}],
+    ['move_page_to_space', { pageId: PAGE_ID, spaceId: OTHER_SPACE_ID }],
+    ['create_comment', { pageId: PAGE_ID, text: 'Fixture' }],
+  ]) {
+    const before = fixture.calls.length;
+    const reply = await rpc.call(name, input);
+    assertToolError(reply, /FORBIDDEN/);
+    assert.ok(!JSON.stringify(reply).includes(PRIVATE_VALUES[5]));
+    assert.equal(fixture.calls.length, before + 1, `${name} does not retry a forbidden request`);
+  }
+});
+
+test('page destination preflights reject self, other-space parents and same-space transfers before a mutation', { timeout: 10000 }, async t => {
+  const { fixture, rpc } = await harness(t);
+  for (const [name, input] of [
+    ['move_page', { pageId: PAGE_ID, parentPageId: PAGE_ID, position: 'a0000' }],
+    ['move_page', { pageId: PAGE_ID, parentPageId: OTHER_PARENT_ID, position: 'a0000' }],
+    ['copy_page_to_space', { pageId: PAGE_ID, spaceId: SPACE_ID }],
+    ['move_page_to_space', { pageId: PAGE_ID, spaceId: SPACE_ID }],
+  ]) {
+    const before = fixture.calls.length;
+    assertToolError(await rpc.call(name, input), /INVALID_REQUEST/);
+    assert.ok(fixture.calls.length > before, `${name} reads its source before validating the destination`);
+    assert.ok(fixture.calls.slice(before).every(call => ['/api/pages/info', '/api/spaces/info'].includes(call.path)), `${name} must not mutate a rejected destination`);
+  }
+  fixture.respond = (call, response) => {
+    if (call.path !== '/api/spaces/info') return false;
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({ data: { id: SPACE_ID, name: 'Mismatched target', slug: 'mismatched-target' }, success: true }));
+    return true;
+  };
+  for (const name of ['copy_page_to_space', 'move_page_to_space']) {
+    const before = fixture.calls.length;
+    assertToolError(await rpc.call(name, { pageId: 'fixture-page-slug', spaceId: OTHER_SPACE_ID }), /INVALID_(REQUEST|RESPONSE)/);
+    assert.deepEqual(fixture.calls.slice(before).map(call => ({ path: call.path, body: call.body })), [
+      { path: '/api/pages/info', body: { pageId: 'fixture-page-slug' } },
+      { path: '/api/spaces/info', body: { spaceId: OTHER_SPACE_ID } },
+    ]);
   }
 });
 
@@ -612,7 +922,7 @@ test('401 and 403 are surfaced as failures without retrying or exposing credenti
   }
 });
 
-test('read-only mode advertises only six readers and rejects every write without HTTP', { timeout: 10000 }, async t => {
+test('read-only mode advertises ten readers and rejects every write without HTTP', { timeout: 10000 }, async t => {
   const { fixture, rpc } = await harness(t, { DOCMOST_READ_ONLY: '1' });
   const tools = await rpc.request('tools/list');
   assert.equal(tools.error, undefined);
@@ -622,6 +932,14 @@ test('read-only mode advertises only six readers and rejects every write without
     ['update_page', { pageId: PAGE_ID, title: 'Denied' }],
     ['delete_page', { pageId: PAGE_ID }],
     ['restore_page', { pageId: PAGE_ID }],
+    ['duplicate_page', { pageId: PAGE_ID }],
+    ['copy_page_to_space', { pageId: PAGE_ID, spaceId: OTHER_SPACE_ID }],
+    ['move_page', { pageId: PAGE_ID, parentPageId: null, position: 'a0000' }],
+    ['move_page_to_space', { pageId: PAGE_ID, spaceId: OTHER_SPACE_ID }],
+    ['create_space', { name: 'Denied', slug: 'denied' }],
+    ['update_space', { spaceId: SPACE_ID, name: 'Denied' }],
+    ['create_comment', { pageId: PAGE_ID, text: 'Denied' }],
+    ['update_comment', { commentId: PAGE_ID, text: 'Denied' }],
   ];
   for (const [name, args] of writes) assertToolError(await rpc.call(name, args));
   assert.deepEqual(fixture.calls, []);
