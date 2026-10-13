@@ -127,6 +127,8 @@ function startMcp(url, overrides = {}, args = []) {
     env: {
       ...process.env,
       DOCMOST_URL: url,
+      DOCMOST_AUTH_MODE: 'api_key',
+      DOCMOST_SESSION_FILE: undefined,
       DOCMOST_API_TOKEN: TOKEN,
       DOCMOST_API_TOKEN_FILE: undefined,
       DOCMOST_DEFAULT_SPACE_ID: SPACE_ID,

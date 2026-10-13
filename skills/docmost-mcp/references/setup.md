@@ -1,18 +1,18 @@
 # 安装配置本地 Docmost MCP
 
-本参考随 Skill 安装，足以在没有原仓库目录时引导接入。[完整中文 GitHub 指南](https://github.com/MrQinYQ/docmost/blob/main/docs/local-mcp.md) 是源码交付入口。安装前确认 `main` 含有 MCP 包和 Skill；缺少时说明版本问题，不改装同名第三方包。代码、Skill 和指南随同一分支交付，以所选分支实际文件为准。
+本参考随 Skill 安装，不依赖原仓库目录。[完整中文 GitHub 指南](https://github.com/MrQinYQ/docmost/blob/main/docs/local-mcp.md) 含可直接交给 Agent 的安装提示词。代码、Skill 和指南应来自同一分支；社区会话要求所选版本已包含 `--login` / `--logout` 和 `DOCMOST_AUTH_MODE=session`，不能把旧的 API Key 版本当成已支持。缺少入口时说明版本问题，不安装同名第三方包。
 
-## 确认安装范围与服务器能力
+## 确认范围与认证模式
 
-先确认用户的部署根 URL（例如 `https://wiki.example.com`，不含 `/api`）、客户端、源码安装目录和 MCP/Skill 作用域。根据当前操作系统执行命令，不照搬 macOS/Linux 示例到 Windows。检查 Git、Node.js 22+、npm，记录实际 Node 绝对路径；缺少依赖时说明所需版本，按用户授权安装。使用用户确认的新目录，已有目录不能覆盖、删除或重置。
+确认部署根 HTTPS URL（如 `https://wiki.example.com`，不含 `/api`）、AI 客户端、源码安装目录和 MCP/Skill 作用域。已有信息不重复询问；用户授权安装并选定作用域后可以构建和合并配置，保留其他设置。检查 Git、Node.js 22+、npm，记录实际 Node 绝对路径；缺少依赖时按授权安装，不擅自改变全局配置。示例为 macOS/Linux，其他系统适配命令、路径和私有权限。
 
-目标部署必须支持官方 API Key。Docmost 官方将 API 列为需要有效企业许可证的功能；个人 Key 继承创建者权限。[官方 API 指南](https://docmost.com/docs/user-guide/api)
+没有企业 API Key 且用户选择邮箱/密码接入时，明确使用 `DOCMOST_AUTH_MODE=session`。它通过目标部署正常个人登录建立专用可撤销会话，继承当前账号权限，不需要企业 API Key。SSO/MFA 或没有 session ID 的旧版 ACCESS 登录不支持，停止并说明；不抓取浏览器 Cookie、不伪造 JWT、不修改许可检查、不自动更换管理员或切换凭据模式。
 
-这份社区源码缺少服务器企业 API Key 模块，Key 界面或 `api_keys` 表存在不能证明 Token 能用。401 时检查部署能力、Token 过期/撤销等，不绕过许可、不修改企业模块、不自动改用 Cookie、管理员凭据或自行签名 JWT。
+兼容默认模式仍为 `api_key`，不能省略模式后期待自动进入社区登录。会话模式拒绝 `DOCMOST_API_TOKEN` / `DOCMOST_API_TOKEN_FILE`，API Key 模式拒绝 `DOCMOST_SESSION_FILE`。需要切换时仅在用户选择的模式下替换对应配置，不保留旧模式的凭据变量。
 
 ## 下载与构建
 
-macOS/Linux 示例，替换为用户确认的未占用绝对路径：
+使用用户确认的未占用绝对路径，已有目录先检查用途，不覆盖、删除或重置。若需非默认分支，先核对它包含会话模式并选用：
 
 ```sh
 git clone --depth 1 --filter=blob:none --sparse \
@@ -23,68 +23,97 @@ git sparse-checkout set packages/mcp skills/docmost-mcp docs
 cd packages/mcp
 npm install --workspaces=false
 npm run --workspaces=false build
+node /absolute/path/docmost-mcp-source/packages/mcp/dist/index.mjs --help
 ```
 
-只安装 MCP 包依赖，不在根目录安装整个 Docmost 工作区；无需 pnpm、npm 发布或 `npm pack`。保留稀疏检出的源码及根许可证。入口是 `packages/mcp/dist/index.mjs`；要验证包内模拟测试可在包目录运行 `npm run --workspaces=false test`。
+核对 `--help` 列出 `--login`、`--logout` 和会话配置变量。只安装 MCP 包依赖，不安装整个工作区；不需要 pnpm、npm 发布或 `npm pack`。保留源码和根许可证。入口是 `/absolute/path/docmost-mcp-source/packages/mcp/dist/index.mjs`；包内测试可在包目录运行 `npm run --workspaces=false test`，不能代替目标公司部署验收。
 
-## 用户私有保存 Token
+## 用户本人在终端登录
 
-引导用户在目标部署的 **Settings → Account → API keys → Create API Key** 创建个人 Key。Key 只显示一次，选择适当有效期。用户本人用可信的本地编辑器把它写入仓库外私有纯文本文件；不要索要聊天中的 Token，也不读取、回显或记录文件内容。
+`DOCMOST_SESSION_FILE` 必须为仓库外的私有 JSON 绝对路径。建议为 `~/.config/docmost/session.json` 的实际绝对路径；shell 可用 `"$HOME/.config/docmost/session.json"` 展开，客户端配置须写绝对路径。CLI 管理私有目录和会话文件，POSIX 下目录 `0700`、当前用户所有的普通文件 `0600`，不支持符号链接。不要手写会话 JSON，也不要创建空文件供登录覆盖。
 
-可帮助创建空文件。下面是 macOS/Linux 示例，已有文件先确认是否沿用，不覆盖：
+把替换好实际部署、Node 和源码路径的命令交给用户，由用户在自己的真实本机终端执行；登录无需默认空间：
 
 ```sh
-install -d -m 700 "$HOME/.config/docmost"
-touch "$HOME/.config/docmost/api-token"
-chmod 600 "$HOME/.config/docmost/api-token"
+DOCMOST_URL=https://wiki.example.com \
+DOCMOST_AUTH_MODE=session \
+DOCMOST_SESSION_FILE="$HOME/.config/docmost/session.json" \
+node /absolute/path/docmost-mcp-source/packages/mcp/dist/index.mjs --login
 ```
 
-配置仅保存文件绝对路径。POSIX 文件必须是当前用户所有、权限 `0600` 的普通文件，不支持符号链接；其他系统设置当前用户私有权限。Token 值不进入聊天、命令、客户端配置、源码或日志。MCP 进程会直接读取私有文件并请求用户指定部署。用户确认已保存后继续，不通过打印文件内容检查。
+CLI 提示邮箱和隐藏密码，只向配置的同一 HTTPS origin 登录，拒绝重定向，并验证身份与可撤销会话后保存。密码只短暂存在于进程内存，不保存、不接受 `DOCMOST_PASSWORD` 等环境变量、argv、工具参数或模型输入。Agent 不代跑 `--login`，不向聊天索要密码，不用管道或模拟 TTY 灌入密码，不读取、回显、复制或记录会话文件内容。用户完成后继续只读配置检查，不通过打开文件验证。
+
+已有未过期记录不会被 `--login` 静默覆盖；更换账号先退出。同部署过期记录可重新登录替换；来源不同或格式异常记录拒绝，不删除未知文件绕过。运行时只加载已保存会话，401、撤销、过期后提示用户自行重新登录，没有自动登录或 API Key 回退。
+
+退出使用同一部署和同一文件，无需默认空间：
+
+```sh
+DOCMOST_URL=https://wiki.example.com \
+DOCMOST_AUTH_MODE=session \
+DOCMOST_SESSION_FILE="$HOME/.config/docmost/session.json" \
+node /absolute/path/docmost-mcp-source/packages/mcp/dist/index.mjs --logout
+```
+
+`--logout` 只撤销 MCP 专用会话并清理本地文件，不退出全部设备。远程撤销失败时说明不确定性；清理文件不能证明服务器会话已撤销，由用户在 Docmost 账号的 Sessions 检查对应会话。尚未过期但已撤销的本地记录先 `--logout` 再 `--login`；同部署已过期记录可直接重登录。重登录后重启 MCP 连接。登录成功却保存失败时 CLI 尝试撤销新会话，不能声称失败的撤销已成功。
 
 ## 选择默认空间与父页
 
-先仅用 URL 和 Token 文件运行只读列表，无需预先填写默认空间：
+用户完成登录后，Agent 可先仅用 URL、模式和会话路径执行只读列表，无需默认空间：
 
 ```sh
 DOCMOST_URL=https://wiki.example.com \
-DOCMOST_API_TOKEN_FILE=/Users/your-name/.config/docmost/api-token \
+DOCMOST_AUTH_MODE=session \
+DOCMOST_SESSION_FILE=/Users/your-name/.config/docmost/session.json \
 node /absolute/path/docmost-mcp-source/packages/mcp/dist/index.mjs --list-spaces
 ```
 
-输出 `items` 和 `meta`，向用户展示名称及 UUID。`meta.nextCursor` 非空时，用同样环境运行 `--list-spaces --cursor '返回的原始游标'` 继续翻页。让用户选择必填默认空间，不擅自选择第一项。保存 `DOCMOST_DEFAULT_SPACE_ID=<真实空间UUID>`；正常 stdio 启动和 `--check` 必填。
+展示 `items` 的空间名称及 UUID。`meta.nextCursor` 非空时以同样环境运行 `--list-spaces --cursor '返回的原始游标'` 翻页。让用户选择必填默认空间，不擅自选择第一项。`DOCMOST_DEFAULT_SPACE_ID` 必须为真实 UUID，正常 stdio 启动和 `--check` 必填；名称和 URL 片段不能代替。
 
-再询问可选的默认父页：用户不需要时直接跳过，不设置或为空即默认空间根目录；配置时使用该空间中的规范 UUID，不能用页面 URL slugId。用户只有父页标题/链接时，先仅配置默认空间、不设置父页，运行下面的 `--check` 并按下一节登记客户端；然后仅做只读查询，用 `search_pages` / `get_page` 获取父页 `id` 并核对 `spaceId`。再补充 `DOCMOST_DEFAULT_PARENT_PAGE_ID=<真实父页UUID>`，重新 `--check`、合并父页配置并重启连接。父页必须属于默认空间且未删除，无需用户预先知道获取 UUID 的方法。
+再询问可选默认父页：留空或不设置即空间根目录；配置须为默认空间中未删除父页的规范 UUID，不能用页面 URL slugId。用户只有标题/链接时，先只设置默认空间、运行 `--check` 并登记客户端；用 `search_pages` / `get_page` 只读取得 `id` 并核对 `spaceId`，再补充 `DOCMOST_DEFAULT_PARENT_PAGE_ID`、重新检查并合并配置。无需用户预先懂得获取 UUID。
 
-下面的示例 UUID 必须替换。无父页时运行：
+无父页的检查示例，UUID 必须替换；有父页时增加对应变量：
 
 ```sh
 DOCMOST_URL=https://wiki.example.com \
-DOCMOST_API_TOKEN_FILE=/Users/your-name/.config/docmost/api-token \
+DOCMOST_AUTH_MODE=session \
+DOCMOST_SESSION_FILE=/Users/your-name/.config/docmost/session.json \
 DOCMOST_DEFAULT_SPACE_ID=11111111-1111-4111-8111-111111111111 \
 node /absolute/path/docmost-mcp-source/packages/mcp/dist/index.mjs --check
 ```
 
-有父页时增加 `DOCMOST_DEFAULT_PARENT_PAGE_ID`。`--check` 只读验证 Token 身份、默认空间访问、父页空间归属和未删除状态；失败先解决，不声称写权限已验收。
+`--check` 只读验证身份、默认空间和父页归属/未删除状态，失败先解决，不声称写权限已验收。
 
 ## 合并客户端配置
 
-用户已授权安装并选定作用域时，执行登记或合并，保留所有其他设置；同名配置冲突时先比较并让用户选择。客户端配置只含非秘密的 URL、默认空间/父页、私有文件路径和启动命令，不含 Token 值。
+用户已授权安装并选择作用域时，登记或合并配置，保留其他设置；同名 `docmost` 冲突先比较再让用户选择。配置只保存 URL、模式、私有文件路径、默认位置和启动命令，不含密码或会话值。默认 `DOCMOST_READ_ONLY=0` 提供十个工具，写入仍以用户的具体文档任务授权为限；只有用户选择只读连接时设 `1`，仅提供六个读取工具。
 
-正常配置 `DOCMOST_READ_ONLY=0`（默认也是 `0`），提供全部读写工具；实际写入须有用户任务授权。只有用户选择只读时设为 `1`，此时仅有六个读取工具。两个 Token 来源 `DOCMOST_API_TOKEN_FILE` / `DOCMOST_API_TOKEN` 二选一，不能同时配置；若使用后者，应由安全的进程环境注入，不把值写进配置。
-
-Claude Code 的当前用户级示例（替换所有路径/UUID），当前项目按用户选择改用 `--scope local` 或 `--scope project`；有默认父页时加其 `--env` 项：
+Claude Code 当前用户级示例；项目级按用户选择改用 `--scope local` / `--scope project`，有父页时加其环境变量项：
 
 ```sh
 claude mcp add --scope user --transport stdio \
   --env DOCMOST_URL=https://wiki.example.com \
-  --env DOCMOST_API_TOKEN_FILE=/Users/your-name/.config/docmost/api-token \
+  --env DOCMOST_AUTH_MODE=session \
+  --env DOCMOST_SESSION_FILE=/Users/your-name/.config/docmost/session.json \
   --env DOCMOST_DEFAULT_SPACE_ID=11111111-1111-4111-8111-111111111111 \
   --env DOCMOST_READ_ONLY=0 \
   docmost -- /absolute/path/to/node /absolute/path/docmost-mcp-source/packages/mcp/dist/index.mjs
 claude mcp get docmost
 ```
 
-Codex 的用户级 CLI 可使用同样的 `--env` 项执行 `codex mcp add docmost ... -- <Node绝对路径> <入口绝对路径>`。或将下面内容合并到用户级 `~/.codex/config.toml` / 用户选择的受信任项目 `.codex/config.toml`；项目配置只在项目受信任时加载：
+Codex 用户级 CLI 同样登记，替换所有路径和 UUID：
+
+```sh
+codex mcp add docmost \
+  --env DOCMOST_URL=https://wiki.example.com \
+  --env DOCMOST_AUTH_MODE=session \
+  --env DOCMOST_SESSION_FILE=/Users/your-name/.config/docmost/session.json \
+  --env DOCMOST_DEFAULT_SPACE_ID=11111111-1111-4111-8111-111111111111 \
+  --env DOCMOST_READ_ONLY=0 \
+  -- /absolute/path/to/node /absolute/path/docmost-mcp-source/packages/mcp/dist/index.mjs
+codex mcp list
+```
+
+也可合并到用户级 `~/.codex/config.toml` 或用户选择的受信任项目 `.codex/config.toml`；项目配置只在受信任项目中加载：
 
 ```toml
 [mcp_servers.docmost]
@@ -93,25 +122,34 @@ args = ["/absolute/path/docmost-mcp-source/packages/mcp/dist/index.mjs"]
 
 [mcp_servers.docmost.env]
 DOCMOST_URL = "https://wiki.example.com"
-DOCMOST_API_TOKEN_FILE = "/Users/your-name/.config/docmost/api-token"
+DOCMOST_AUTH_MODE = "session"
+DOCMOST_SESSION_FILE = "/Users/your-name/.config/docmost/session.json"
 DOCMOST_DEFAULT_SPACE_ID = "11111111-1111-4111-8111-111111111111"
 DOCMOST_READ_ONLY = "0"
 # DOCMOST_DEFAULT_PARENT_PAGE_ID = "22222222-2222-4222-8222-222222222222"
 ```
 
-可选配置：`DOCMOST_TIMEOUT_MS` 默认 `30000`，允许 `100`–`120000` 毫秒；`DOCMOST_ALLOW_LOCAL_HTTP=1` 只允许本机调试 HTTP，远程部署仍用 HTTPS。[Claude Code MCP 文档](https://code.claude.com/docs/en/mcp)、[OpenAI MCP 文档](https://learn.chatgpt.com/docs/extend/mcp?surface=cli)
+可选 `DOCMOST_TIMEOUT_MS` 默认 `30000`，范围 `100`–`120000` 毫秒；`DOCMOST_ALLOW_LOCAL_HTTP=1` 仅允许本机 loopback 调试，远程仍需 HTTPS。重启连接后检查工具。[Claude Code MCP 文档](https://code.claude.com/docs/en/mcp)、[OpenAI MCP 文档](https://learn.chatgpt.com/docs/extend/mcp?surface=cli)
+
+## API Key 备选模式
+
+仅在目标部署支持官方 API Key、具备有效许可且用户选择它时使用 `DOCMOST_AUTH_MODE=api_key`。官方将该 API 列为企业许可功能；界面或 `api_keys` 表存在不足以证明服务器支持。[官方 API 指南](https://docmost.com/docs/user-guide/api)
+
+用户在目标部署 **Settings → Account → API keys** 创建个人 Key，再本人用可信本地编辑器将 Key 写入仓库外私有纯文本文件，如 `/Users/your-name/.config/docmost/api-token`。POSIX 文件须当前用户所有、普通文件 `0600`、无符号链接。Agent 不索要聊天中的 Key，不读取、回显或记录内容；配置只保存 `DOCMOST_API_TOKEN_FILE` 绝对路径。也兼容由安全进程环境注入的 `DOCMOST_API_TOKEN`，两种来源只能设置一个，不能把明文值写进配置或命令。
+
+移除 `DOCMOST_SESSION_FILE`，将上述列表、检查和客户端配置的模式改为 `api_key`，会话文件变量替换为一个 Key 来源；不运行 `--login` / `--logout`，其他默认空间/父页和工具约定相同。401 检查 Key 过期、撤销、部署归属及企业能力，不自动退回社区登录。轮换由用户更新 Key 文件并在服务器撤销旧 Key。
 
 ## 安装 Skill 与只读验收
 
-复制源码的整个 `skills/docmost-mcp` 目录，包含 `references` 和 `agents`。目标已有同名目录时先比较后更新，不直接 `cp -R` 导致嵌套。
+复制整个 `skills/docmost-mcp`，含 `references` 和 `agents`。目标已有同名目录时先比较后更新，避免嵌套复制；仅在已授权作用域安装：
 
 | 客户端 | 项目级目标 | 用户级目标 |
 | --- | --- | --- |
 | Claude Code | `.claude/skills/docmost-mcp` | `~/.claude/skills/docmost-mcp` |
 | Codex | `.agents/skills/docmost-mcp` | `~/.agents/skills/docmost-mcp` |
 
-例如在目标项目根目录 `mkdir -p .agents/skills`，再 `cp -R /absolute/path/docmost-mcp-source/skills/docmost-mcp .agents/skills/docmost-mcp`。仅在已授权的作用域安装；Skill 不自动登记 MCP 或授予权限。[Claude Code Skill 文档](https://code.claude.com/docs/en/skills)、[OpenAI Skill 文档](https://learn.chatgpt.com/docs/build-skills)
+例如目标项目根目录执行 `mkdir -p .agents/skills` 后，`cp -R /absolute/path/docmost-mcp-source/skills/docmost-mcp .agents/skills/docmost-mcp`。Skill 不自动登记 MCP 或授予权限。[Claude Code Skill 文档](https://code.claude.com/docs/en/skills)、[OpenAI Skill 文档](https://learn.chatgpt.com/docs/build-skills)
 
-重启 MCP 连接/客户端，通过 `/mcp` 或对应工具列表检查。调用 `get_current_user` 核对身份和 `defaults`（`spaceId` UUID、`parentPageId` UUID 或 `null`），再 `get_space` 核对默认空间，并在用户授权内容范围内检索、读取。报告安装和配置位置、部署 URL、身份、默认空间及父页，不输出凭据。没有真实 Token 或实际返回时如实说明未验证；创建测试页必须已有该写验收授权。
+重启后用 `/mcp` 或工具列表检查，调用 `get_current_user` 核对身份及 `defaults`（`spaceId` UUID、`parentPageId` UUID 或 `null`），再 `get_space` 核对默认空间，按授权检索/读取页面。报告安装和配置位置、部署 URL、身份、空间及父页，不输出凭据。没有实际目标部署返回时如实说明未验证；创建测试页须已有写验收授权。403 表示当前用户权限不足，不改用管理员。会话 401 按上节交由用户重新登录。
 
-默认创建位置遵循 [工具约定](tool-contract.md)：默认空间下省略父页继承默认父页，显式 `null` 表示根目录，明确其他空间不继承默认父页。安装授权不代表用户授权修改任意文档。
+默认创建位置和写入行为见 [工具约定](tool-contract.md)。会话与 Key 模式均使用同一组十个工具和编辑器/Yjs 更新路径；安装授权不等于修改任意文档的授权。

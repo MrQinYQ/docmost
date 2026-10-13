@@ -1,19 +1,14 @@
-const paths = new Set(['users/me', 'spaces', 'spaces/info', 'search', 'pages/recent', 'pages/info', 'pages/create', 'pages/update', 'pages/delete', 'pages/restore']);
+import { ApiError } from './errors.mjs';
+export { ApiError } from './errors.mjs';
+const paths = new Set(['users/me', 'sessions', 'auth/logout', 'spaces', 'spaces/info', 'search', 'pages/recent', 'pages/info', 'pages/create', 'pages/update', 'pages/delete', 'pages/restore']);
 const MAX_BYTES = 4 * 1024 * 1024;
-
-export class ApiError extends Error {
-  constructor(code, message, { status, mayHaveSucceeded = false } = {}) {
-    super(message);
-    this.code = code;
-    this.status = status;
-    this.mayHaveSucceeded = mayHaveSucceeded;
-  }
-}
 
 export function createApiClient(config, fetchImpl = globalThis.fetch) {
   function redact(value) { return value.split(config.token).join('[REDACTED]'); }
   async function post(path, body, cancellation, mutation = false) {
     if (!paths.has(path)) throw new ApiError('INVALID_PATH', 'Unsupported Docmost API path.');
+    if (config.authMode === 'session' && config.session?.expiresAt <= Date.now())
+      throw new ApiError('UNAUTHENTICATED', 'The personal session expired. Run --login in your own terminal before making another request.');
     const timeout = AbortSignal.timeout(config.timeoutMs);
     const signal = cancellation ? AbortSignal.any([cancellation, timeout]) : timeout;
     const failure = (code, message, status) => new ApiError(code, message, { status, mayHaveSucceeded: mutation });
@@ -31,7 +26,9 @@ export function createApiClient(config, fetchImpl = globalThis.fetch) {
         await response.body?.cancel();
         const codes = { 400: 'INVALID_REQUEST', 401: 'UNAUTHENTICATED', 403: 'FORBIDDEN', 404: 'NOT_FOUND', 429: 'RATE_LIMITED' };
         const hints = {
-          401: 'Docmost rejected the credential. Check Token expiry/revocation and native API Key support/license in the target deployment.',
+          401: config.authMode === 'session'
+            ? 'The personal session has expired or been revoked. Run --login in your own terminal; passwords must not be sent through MCP tools or chat.'
+            : 'Docmost rejected the credential. Check Token expiry/revocation and native API Key support/license in the target deployment.',
           403: 'Docmost denied this operation for the Token user or endpoint.',
           404: 'Docmost could not find the resource or endpoint.',
           429: 'Docmost rate-limited the request. No automatic retry was made.',

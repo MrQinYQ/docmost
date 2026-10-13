@@ -1,10 +1,11 @@
 import { open } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { z } from 'zod';
+import { isAbsolute } from 'node:path';
+import { ConfigError } from './errors.mjs';
+import { loadSession } from './session.mjs';
 
-export class ConfigError extends Error {
-  constructor(message) { super(message); this.code = 'CONFIG_ERROR'; }
-}
+export { ConfigError } from './errors.mjs';
 
 function flag(env, name) {
   const value = env[name];
@@ -13,7 +14,7 @@ function flag(env, name) {
   return value === '1';
 }
 
-export async function loadConfig(env = process.env, { requireDefaultSpace = true } = {}) {
+export function loadConnectionConfig(env = process.env, { requireDefaultSpace = true } = {}) {
   let base;
   try { base = new URL(env.DOCMOST_URL); }
   catch { throw new ConfigError('Set DOCMOST_URL to the Docmost deployment root URL.'); }
@@ -38,6 +39,30 @@ export async function loadConfig(env = process.env, { requireDefaultSpace = true
   const defaultParentPageId = configuredUuid('DOCMOST_DEFAULT_PARENT_PAGE_ID');
   if (!defaultSpaceId && (requireDefaultSpace || defaultParentPageId))
     throw new ConfigError('Set DOCMOST_DEFAULT_SPACE_ID. Use --list-spaces first to choose an accessible space; the default parent page is optional.');
+
+  const authMode = env.DOCMOST_AUTH_MODE ?? 'api_key';
+  if (!['api_key', 'session'].includes(authMode))
+    throw new ConfigError('DOCMOST_AUTH_MODE must be session or api_key; automatic fallback is not supported.');
+  if (env.DOCMOST_PASSWORD || env.DOCMOST_LOGIN_PASSWORD)
+    throw new ConfigError('Passwords are not accepted through environment variables. Run --login in your own terminal and enter the password privately.');
+  const sessionFile = env.DOCMOST_SESSION_FILE?.trim();
+  if (authMode === 'session') {
+    if (!sessionFile || !isAbsolute(sessionFile))
+      throw new ConfigError('Session mode requires DOCMOST_SESSION_FILE as an absolute private file path.');
+    if (env.DOCMOST_API_TOKEN || env.DOCMOST_API_TOKEN_FILE)
+      throw new ConfigError('Session mode cannot use DOCMOST_API_TOKEN or DOCMOST_API_TOKEN_FILE.');
+  } else if (sessionFile) {
+    throw new ConfigError('API Key mode cannot use DOCMOST_SESSION_FILE. Select exactly one authentication mode.');
+  }
+  return { origin: base.origin, apiBase: `${base.origin}/api/`, timeoutMs, readOnly, defaultSpaceId, defaultParentPageId, authMode, sessionFile, allowLocalHttp: localHttp };
+}
+
+export async function loadConfig(env = process.env, options = {}) {
+  const config = loadConnectionConfig(env, options);
+  if (config.authMode === 'session') {
+    const session = await loadSession(config.sessionFile, config.origin);
+    return { ...config, token: session.token, session };
+  }
 
   const direct = env.DOCMOST_API_TOKEN;
   const file = env.DOCMOST_API_TOKEN_FILE;
@@ -70,5 +95,5 @@ export async function loadConfig(env = process.env, { requireDefaultSpace = true
     if (payload.type !== 'api_key')
       throw new ConfigError('Configure an API Key, not a browser session or OAuth credential.');
   }
-  return { apiBase: `${base.origin}/api/`, token, timeoutMs, readOnly, defaultSpaceId, defaultParentPageId };
+  return { ...config, token };
 }

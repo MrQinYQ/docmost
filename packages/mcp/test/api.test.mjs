@@ -122,6 +122,13 @@ test('network errors are sanitized, mark uncertain writes, and never retry', asy
   assert.equal(calls, 1);
 });
 
+test('an expired personal session stops a running MCP before dispatching another request', async () => {
+  let calls = 0;
+  const api = createApiClient({ ...config, authMode: 'session', session: { expiresAt: Date.now() - 1 } }, async () => { calls++; return Response.json({ success: true, data: {} }); });
+  await assert.rejects(api.post('pages/create', {}, undefined, true), { code: 'UNAUTHENTICATED', mayHaveSucceeded: false });
+  assert.equal(calls, 0);
+});
+
 test('response bounds, malformed JSON, false success and credential echo are controlled', async () => {
   const tooLarge = createApiClient(config, async () => new Response('x', { headers: { 'content-length': '4194305' } }));
   await assert.rejects(tooLarge.post('pages/info', {}), { code: 'RESPONSE_TOO_LARGE' });
