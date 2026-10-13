@@ -13,6 +13,7 @@ import { useCollabToken } from "@/features/auth/queries/auth-query.tsx";
 import { Error404 } from "@/components/ui/error-404.tsx";
 import { useEntitlements } from "@/ee/entitlement/use-entitlements";
 import { entitlementAtom } from "@/ee/entitlement/entitlement-atom";
+import { WebMcpProvider } from "@/features/webmcp/webmcp-provider";
 
 export function UserProvider({ children }: React.PropsWithChildren) {
   const [, setCurrentUser] = useAtom(currentUserAtom);
@@ -61,7 +62,8 @@ export function UserProvider({ children }: React.PropsWithChildren) {
   }, [data, isLoading]);
 
   useEffect(() => {
-    document.documentElement.lang = i18n.resolvedLanguage || i18n.language || "en-US";
+    document.documentElement.lang =
+      i18n.resolvedLanguage || i18n.language || "en-US";
   }, [i18n.language, i18n.resolvedLanguage]);
 
   useEffect(() => {
@@ -80,5 +82,12 @@ export function UserProvider({ children }: React.PropsWithChildren) {
     return <></>;
   }
 
-  return <>{children}</>;
+  return (
+    <>
+      {data?.user?.id && data?.workspace?.id && (
+        <WebMcpProvider userId={data.user.id} workspaceId={data.workspace.id} />
+      )}
+      {children}
+    </>
+  );
 }

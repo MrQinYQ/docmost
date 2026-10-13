@@ -871,6 +871,19 @@ importers:
         specifier: 17.0.5
         version: 17.0.5
 
+  packages/mcp:
+    dependencies:
+      '@modelcontextprotocol/server':
+        specifier: 2.3.1
+        version: 2.3.1
+      zod:
+        specifier: 4.3.6
+        version: 4.3.6
+    devDependencies:
+      esbuild:
+        specifier: 0.28.1
+        version: 0.28.1
+
 packages:
 
   '@aashutoshrathi/word-wrap@1.2.6':

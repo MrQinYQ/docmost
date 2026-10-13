@@ -4,7 +4,7 @@
 data
 # compiled output
 dist
-/node_modules
+node_modules/
 
 # Logs
 logs
@@ -41,3 +41,4 @@ lerna-debug.log*
 .nx
 .nx/installation
 .nx/cache
+.pnpm-store/
