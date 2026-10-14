@@ -1,6 +1,6 @@
 ---
 name: docmost-mcp
-description: 用于从 GitHub 安装配置本地 Docmost MCP、社区版个人会话登录、部署域名和默认空间/父页设置，以及通过已连接工具检索或维护授权页面、空间、评论与附件。不用于 Docmost 服务器开发、许可绕过或本地快照。
+description: 用于从 GitHub 安装配置本地 Docmost MCP、社区版个人会话登录、部署域名和默认位置、本地 Markdown 自动同步，以及通过已连接工具检索或维护授权页面、空间、评论与附件。不用于 Docmost 服务器开发、许可绕过或本地快照。
 ---
 
 # Docmost MCP
@@ -44,6 +44,14 @@ description: 用于从 GitHub 安装配置本地 Docmost MCP、社区版个人�
 空间创建/更新使用 `create_space` / `update_space`，随后用 `get_space` 核对。评论创建/更新使用 `create_comment` / `update_comment` 的非空纯文本 `text`，包装层转换为编辑器 JSON；不解析 HTML 或 Markdown，不开放富文本或 inline selection。先确认页面、评论或同页顶层回复目标，再用 `get_comments` 核对。`update_comment` 只允许当前作者编辑自己的评论，不从页面编辑授权推导出修改他人评论的授权。
 
 当前 API 不提供本 Skill 可依赖的条件写入保证。大幅替换前重新读取以减少覆盖他人新内容的风险；不要宣称编辑是原子比较并交换。
+
+## 本地 MD 自动同步
+
+用户要求关联本地 Markdown 或配置保存自动同步时，读取 [自动同步](references/markdown-sync.md)。同步是单向 MD → Docmost，跟随实际 MCP 进程生命周期。目录配置不自动授权上传全部文件；只处理明确绑定并启用的文件。绑定后未来保存会替换整页正文，关联操作本身不初始上传；解释这一行为后按已有授权执行。
+
+发现实际同步工具与 schema：`bind_markdown`、`get_markdown_sync_status`、`set_markdown_sync`、`resolve_markdown_sync`。仅同步专用接口有条件写入保证，普通 `update_page` 仍没有。缺少部署接口时报告不支持，不退回普通更新绕过冲突保护。冲突/待确认状态先读取核对；用户明确选择本地或合并结果后才显式解决，不能从“恢复监听”推导覆盖授权。
+
+修改已启用同步的 MD 会产生 Docmost 更新；不要再重复调用普通 `update_page` 上传同一修改。查询状态不触发上传。只读模式、身份或目标空间变化、会话过期时不得继续上传。暂停或解除关联保持两端文件/页面；删除本地文件不自动删除远端。没有实际服务端返回时如实说明未验收，不声称生命周期解决了所有并发问题。
 
 ## 软删除与恢复
 

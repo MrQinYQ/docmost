@@ -1,11 +1,12 @@
 #!/usr/bin/env node
-import { serveStdio } from '@modelcontextprotocol/server/stdio';
+import { serveStdio, StdioServerTransport } from '@modelcontextprotocol/server/stdio';
 import { ConfigError, loadConfig, loadConnectionConfig } from './config.mjs';
-import { ApiError } from './api.mjs';
+import { ApiError, createApiClient } from './api.mjs';
 import { AuthError } from './errors.mjs';
 import { promptCredentials } from './prompt.mjs';
 import { loadSession, loginSession, saveSession, removeSession, logoutSession } from './session.mjs';
 import { checkConnection, createDocmostServer, listAccessibleSpaces } from './server.mjs';
+import { createMarkdownSync } from './sync.mjs';
 
 async function login(config) {
   try {
@@ -47,7 +48,7 @@ async function logout(config) {
 try {
   const args = process.argv.slice(2);
   if (args.length === 1 && args[0] === '--help') {
-    process.stdout.write('Docmost local MCP (stdio)\nRequired: DOCMOST_URL, DOCMOST_DEFAULT_SPACE_ID and an explicit credential source.\nCommunity: DOCMOST_AUTH_MODE=session and DOCMOST_SESSION_FILE (private absolute path).\nAPI Key: DOCMOST_AUTH_MODE=api_key (compatibility default) and DOCMOST_API_TOKEN or DOCMOST_API_TOKEN_FILE.\nOptional: DOCMOST_DEFAULT_PARENT_PAGE_ID, DOCMOST_READ_ONLY=1, DOCMOST_TIMEOUT_MS, DOCMOST_ALLOW_LOCAL_HTTP=1 (loopback only)\n--login performs personal email/password login in your own local terminal; no password is stored.\n--logout revokes only the dedicated personal session and removes its local file.\n--list-spaces [--cursor value] discovers accessible space UUIDs before configuring a default.\nLogin/logout/space discovery do not require a default space.\n--check validates identity, default space and optional parent; without flags starts stdio.\n');
+    process.stdout.write('Docmost local MCP (stdio)\nRequired: DOCMOST_URL, DOCMOST_DEFAULT_SPACE_ID and an explicit credential source.\nCommunity: DOCMOST_AUTH_MODE=session and DOCMOST_SESSION_FILE (private absolute path).\nAPI Key: DOCMOST_AUTH_MODE=api_key (compatibility default) and DOCMOST_API_TOKEN or DOCMOST_API_TOKEN_FILE.\nOptional: DOCMOST_DEFAULT_PARENT_PAGE_ID, DOCMOST_READ_ONLY=1, DOCMOST_TIMEOUT_MS, DOCMOST_ALLOW_LOCAL_HTTP=1 (loopback only)\nOptional Markdown sync: DOCMOST_SYNC_ROOT and DOCMOST_SYNC_STATE_DIR (separate absolute directories). Only explicitly bound .md files sync while stdio is running. Requires compatible conditional sync endpoints; no uploads in read-only mode.\n--login performs personal email/password login in your own local terminal; no password is stored.\n--logout revokes only the dedicated personal session and removes its local file.\n--list-spaces [--cursor value] discovers accessible space UUIDs before configuring a default.\nLogin/logout/space discovery do not require a default space.\n--check validates identity, default space and optional parent; without flags starts stdio.\n');
   } else {
     const discovery = args[0] === '--list-spaces';
     const cursor = discovery && args.length === 3 && args[1] === '--cursor' ? args[2] : undefined;
@@ -69,12 +70,27 @@ try {
     } else if (discovery) {
       process.stdout.write(`${JSON.stringify(await listAccessibleSpaces(config, cursor))}\n`);
     } else {
-      const handle = serveStdio(() => createDocmostServer(config), {
+      const syncManager = config.syncRoot ? await createMarkdownSync(config, { api: createApiClient(config) }) : undefined;
+      const transport = new StdioServerTransport();
+      const handle = serveStdio(() => createDocmostServer(config, { syncManager }), {
+        transport,
         onerror: () => process.stderr.write('Docmost MCP protocol error. Check client compatibility.\n'),
       });
-      const shutdown = () => { void handle.close(); };
+      let closing = false;
+      const shutdown = () => {
+        if (closing) return;
+        closing = true;
+        const stopped = syncManager?.close();
+        void Promise.all([stopped, handle.close()]).catch(() => {
+          process.stderr.write('SYNC_SHUTDOWN_FAILED: Check sync status before restarting; an in-flight upload may have completed.\n');
+          process.exitCode = 1;
+        });
+      };
+      const onclose = transport.onclose;
+      transport.onclose = () => { onclose?.(); shutdown(); };
       process.once('SIGTERM', shutdown);
       process.once('SIGINT', shutdown);
+      void syncManager?.start().catch(() => process.stderr.write('SYNC_STARTUP_FAILED: Markdown sync is paused; inspect get_markdown_sync_status.\n'));
     }
   }
 } catch (error) {

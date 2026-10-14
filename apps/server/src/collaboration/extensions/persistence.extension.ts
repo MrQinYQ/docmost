@@ -2,6 +2,7 @@ import {
   afterUnloadDocumentPayload,
   beforeHandleAwarenessPayload,
   Extension,
+  Document,
   onChangePayload,
   onLoadDocumentPayload,
   onStoreDocumentPayload,
@@ -17,7 +18,7 @@ import {
 } from '../collaboration.util';
 import { PageRepo } from '@docmost/db/repos/page/page.repo';
 import { InjectKysely } from 'nestjs-kysely';
-import { KyselyDB } from '@docmost/db/types/kysely.types';
+import { KyselyDB, KyselyTransaction } from '@docmost/db/types/kysely.types';
 import { executeTx } from '@docmost/db/utils';
 import { InjectQueue } from '@nestjs/bullmq';
 import { QueueJob, QueueName } from '../../integrations/queue/constants';
@@ -39,11 +40,29 @@ import {
   HISTORY_INTERVAL,
 } from '../constants';
 import { TransclusionService } from '../../core/page/transclusion/transclusion.service';
+import { SyncContentPayload } from '../sync.types';
+
+type StoreSnapshot = {
+  tiptapJson: any;
+  ydocState: Buffer;
+  textContent: string | null;
+};
 
 @Injectable()
 export class PersistenceExtension implements Extension {
   private readonly logger = new Logger(PersistenceExtension.name);
   private contributors: Map<string, Set<string>> = new Map();
+  private readonly failedStores = new Set<string>();
+
+  hasFailedStore(documentName: string): boolean {
+    return this.failedStores.has(documentName);
+  }
+
+  async beforeUnloadDocument({ documentName }: { documentName: string }) {
+    if (this.failedStores.has(documentName)) {
+      throw new Error('Cannot unload a document with an unconfirmed store');
+    }
+  }
 
   constructor(
     private readonly pageRepo: PageRepo,
@@ -102,79 +121,167 @@ export class PersistenceExtension implements Extension {
   }
 
   async onStoreDocument(data: onStoreDocumentPayload) {
-    const { documentName, document, lastContext } = data;
-
+    const { documentName } = data;
     const pageId = getPageId(documentName);
-
-    const tiptapJson = TiptapTransformer.fromYdoc(document, 'default');
-    const ydocState = Buffer.from(Y.encodeStateAsUpdate(document));
-
-    let textContent = null;
-
-    try {
-      textContent = jsonToText(tiptapJson);
-    } catch (err) {
-      this.logger.warn('jsonToText' + err?.['message']);
-    }
-
+    const snapshot = this.snapshot(data.document);
     let page: Page = null;
     const editingUserIds = this.consumeContributors(documentName);
-
     try {
       await executeTx(this.db, async (trx) => {
-        page = await this.pageRepo.findById(pageId, {
+        const current = await this.pageRepo.findById(pageId, {
           withLock: true,
           includeContent: true,
           trx,
         });
-
-        if (!page) {
+        if (!current) {
           this.logger.error(`Page with id ${pageId} not found`);
-          return;
+          throw new Error('Page no longer exists');
         }
-
-        if (isDeepStrictEqual(tiptapJson, page.content)) {
-          page = null;
-          return;
-        }
-
-        await this.collabHistory.addContributors(pageId, editingUserIds);
-
-        let contributorIds = undefined;
-        try {
-          const existingContributors = page.contributorIds || [];
-          contributorIds = Array.from(
-            new Set([
-              ...existingContributors,
-              ...editingUserIds,
-              page.creatorId,
-            ]),
-          );
-        } catch (err) {
-          //this.logger.debug('Contributors error:' + err?.['message']);
-        }
-
-        await this.pageRepo.updatePage(
-          {
-            content: tiptapJson,
-            textContent: textContent,
-            ydoc: ydocState,
-            lastUpdatedById: lastContext.user.id,
-            contributorIds: contributorIds,
-          },
-          pageId,
+        page = await this.writeSnapshot(
           trx,
+          current,
+          snapshot,
+          data.lastContext,
+          editingUserIds,
         );
-
-        this.logger.debug(`Page updated: ${pageId} - SlugId: ${page.slugId}`);
       });
+      this.failedStores.delete(documentName);
     } catch (err) {
       this.logger.error(`Failed to update page ${pageId}`, err);
-      page = null;
-      editingUserIds.forEach((userId) =>
-        this.trackContributor(documentName, userId),
-      );
+      this.failedStore(documentName, editingUserIds);
+      throw err;
     }
+    await this.afterStore(data, page, snapshot.tiptapJson);
+  }
+
+  /** The hierarchy guard, live CAS and durable body write share one transaction. */
+  async storeSyncDocument(
+    data: onStoreDocumentPayload,
+    payload: SyncContentPayload,
+    apply: () => boolean,
+  ): Promise<boolean> {
+    return data.document.saveMutex.runExclusive(async () => {
+      let accepted = false;
+      let page: Page = null;
+      let snapshot: StoreSnapshot;
+      let editingUserIds: string[] = [];
+      try {
+        const stored = await executeTx(this.db, async (trx) => {
+          await this.pageRepo.lockPageHierarchySpaces(
+            [payload.expectedSpaceId],
+            trx,
+          );
+          const current = await this.pageRepo.findById(payload.pageId, {
+            includeContent: true,
+            withLock: true,
+            trx,
+          });
+          if (
+            !current ||
+            current.deletedAt ||
+            current.spaceId !== payload.expectedSpaceId ||
+            current.workspaceId !== payload.expectedWorkspaceId ||
+            current.id !== getPageId(data.documentName)
+          )
+            return false;
+          // Once application begins, a thrown error can leave a partially
+          // changed Ydoc. Retain it until a later store confirms durability.
+          accepted = true;
+          if (!apply()) {
+            accepted = false;
+            return false;
+          }
+          snapshot = this.snapshot(data.document);
+          editingUserIds = [
+            ...new Set([
+              ...this.consumeContributors(data.documentName),
+              payload.user.id,
+            ]),
+          ];
+          page = await this.writeSnapshot(
+            trx,
+            current,
+            snapshot,
+            data.lastContext,
+            editingUserIds,
+          );
+          return true;
+        });
+        if (!stored) return false;
+        this.failedStores.delete(data.documentName);
+      } catch (error) {
+        if (accepted) this.failedStore(data.documentName, editingUserIds);
+        throw error;
+      }
+      // Run cross-page/queue work after commit and after releasing DB locks.
+      await this.afterStore(data, page, snapshot.tiptapJson);
+      return true;
+    });
+  }
+
+  private failedStore(documentName: string, editingUserIds: string[]) {
+    editingUserIds.forEach((userId) =>
+      this.trackContributor(documentName, userId),
+    );
+    this.failedStores.add(documentName);
+  }
+
+  private snapshot(document: Document): StoreSnapshot {
+    const tiptapJson = TiptapTransformer.fromYdoc(document, 'default');
+    let textContent = null;
+    try {
+      textContent = jsonToText(tiptapJson);
+    } catch (error) {
+      this.logger.warn('jsonToText' + error?.['message']);
+    }
+    return {
+      tiptapJson,
+      ydocState: Buffer.from(Y.encodeStateAsUpdate(document)),
+      textContent,
+    };
+  }
+
+  private async writeSnapshot(
+    trx: KyselyTransaction,
+    page: Page,
+    snapshot: StoreSnapshot,
+    lastContext: any,
+    editingUserIds: string[],
+  ): Promise<Page | null> {
+    if (isDeepStrictEqual(snapshot.tiptapJson, page.content)) return null;
+    await this.collabHistory.addContributors(page.id, editingUserIds);
+    let contributorIds = undefined;
+    try {
+      contributorIds = Array.from(
+        new Set([
+          ...(page.contributorIds || []),
+          ...editingUserIds,
+          page.creatorId,
+        ]),
+      );
+    } catch {}
+    await this.pageRepo.updatePage(
+      {
+        content: snapshot.tiptapJson,
+        textContent: snapshot.textContent,
+        ydoc: snapshot.ydocState,
+        lastUpdatedById: lastContext.user.id,
+        contributorIds,
+      },
+      page.id,
+      trx,
+    );
+    this.logger.debug(`Page updated: ${page.id} - SlugId: ${page.slugId}`);
+    return page;
+  }
+
+  private async afterStore(
+    data: onStoreDocumentPayload,
+    page: Page | null,
+    tiptapJson: any,
+  ) {
+    const { documentName, document, lastContext } = data;
+    const pageId = getPageId(documentName);
 
     if (page) {
       document.broadcastStateless(

@@ -9,11 +9,14 @@ import { CollaborationModule } from '../../collaboration/collaboration.module';
 import { WatcherModule } from '../watcher/watcher.module';
 import { TransclusionModule } from './transclusion/transclusion.module';
 import { LabelModule } from '../label/label.module';
+import { PageSyncController } from './page-sync.controller';
+import { PageSyncService } from './services/page-sync.service';
 
 @Module({
-  controllers: [PageController],
+  controllers: [PageController, PageSyncController],
   providers: [
     PageService,
+    PageSyncService,
     PageHistoryService,
     TrashCleanupService,
     BacklinkService,

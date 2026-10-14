@@ -254,6 +254,8 @@ cp -R /absolute/path/docmost-mcp-source/skills/docmost-mcp .agents/skills/docmos
 
 ## 工具与默认创建行为
 
+可选的本地 MD 保存自动同步见 [Markdown 自动同步](md-auto-sync.md)：随 MCP 进程启停、显式关联、条件更新和冲突暂停。默认不启用；需要配置源目录与私有状态目录，以及包含条件同步接口的服务器。
+
 本地包对齐 [Docmost 官方 MCP 指南](https://docmost.com/docs/user-guide/mcp) 公开列出的 20 个工具能力，另保留 `delete_page` / `restore_page` 两个本地扩展，共 22 个工具。官方指南公布工具名称和用途，未公布输入 schema；本地输入依据本仓库实际 REST DTO 和权限检查实现，不声称与私有企业 MCP 实现完全一致。官方远程 `/mcp` 的许可与 OAuth 接入要求仍按官方指南执行；本地 stdio 的个人会话方式见前文。
 
 客户端可能给工具名称加前缀，应发现当前连接实际提供的工具，并以其 schema 为准；不能把旧版十工具清单当作固定接口。注册工具不代表目标部署的每个后端接口都可用。

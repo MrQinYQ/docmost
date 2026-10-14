@@ -1,7 +1,7 @@
 import { open } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { z } from 'zod';
-import { isAbsolute } from 'node:path';
+import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { ConfigError } from './errors.mjs';
 import { loadSession } from './session.mjs';
 
@@ -27,6 +27,22 @@ export function loadConnectionConfig(env = process.env, { requireDefaultSpace = 
   const timeoutMs = Number(env.DOCMOST_TIMEOUT_MS ?? 30000);
   if (!Number.isInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 120000)
     throw new ConfigError('DOCMOST_TIMEOUT_MS must be an integer from 100 to 120000.');
+  let syncRoot = env.DOCMOST_SYNC_ROOT?.trim() || undefined;
+  let syncStateDir = env.DOCMOST_SYNC_STATE_DIR?.trim() || undefined;
+  if (Boolean(syncRoot) !== Boolean(syncStateDir))
+    throw new ConfigError('Set both DOCMOST_SYNC_ROOT and DOCMOST_SYNC_STATE_DIR to enable Markdown synchronization.');
+  if (syncRoot) {
+    if (!isAbsolute(syncRoot) || !isAbsolute(syncStateDir))
+      throw new ConfigError('Markdown sync source and state directories must be absolute paths.');
+    syncRoot = resolve(syncRoot);
+    syncStateDir = resolve(syncStateDir);
+    const contains = (parent, child) => {
+      const path = relative(parent, child);
+      return path === '' || (path !== '..' && !path.startsWith(`..${sep}`) && !isAbsolute(path));
+    };
+    if (contains(syncRoot, syncStateDir) || contains(syncStateDir, syncRoot))
+      throw new ConfigError('Markdown sync source and private state directories must be separate, with neither containing the other.');
+  }
 
   function configuredUuid(name) {
     const value = env[name]?.trim();
@@ -54,7 +70,7 @@ export function loadConnectionConfig(env = process.env, { requireDefaultSpace = 
   } else if (sessionFile) {
     throw new ConfigError('API Key mode cannot use DOCMOST_SESSION_FILE. Select exactly one authentication mode.');
   }
-  return { origin: base.origin, apiBase: `${base.origin}/api/`, timeoutMs, readOnly, defaultSpaceId, defaultParentPageId, authMode, sessionFile, allowLocalHttp: localHttp };
+  return { origin: base.origin, apiBase: `${base.origin}/api/`, timeoutMs, readOnly, defaultSpaceId, defaultParentPageId, authMode, sessionFile, allowLocalHttp: localHttp, syncRoot, syncStateDir };
 }
 
 export async function loadConfig(env = process.env, options = {}) {

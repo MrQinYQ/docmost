@@ -5,10 +5,11 @@ const paths = new Set([
   'search', 'search-attachments', 'workspace/members', 'comments', 'comments/create', 'comments/update',
   'pages/recent', 'pages/info', 'pages/sidebar-pages', 'pages/create', 'pages/update',
   'pages/duplicate', 'pages/move', 'pages/move-to-space', 'pages/delete', 'pages/restore',
+  'pages/sync-state', 'pages/sync-update',
 ]);
 const MAX_BYTES = 4 * 1024 * 1024;
 
-async function missingAttachmentRoute(response) {
+async function missingRoute(response, path) {
   // Inspect only a bounded routing-error marker; never surface upstream error bodies.
   const maxBytes = 16 * 1024;
   if (Number(response.headers.get('content-length')) > maxBytes) {
@@ -34,8 +35,8 @@ async function missingAttachmentRoute(response) {
   let error;
   try { error = JSON.parse(Buffer.concat(chunks).toString('utf8')); }
   catch { return false; }
-  return error?.message === 'Cannot POST /api/search-attachments'
-    || error?.message === 'Route POST:/api/search-attachments not found';
+  return error?.message === `Cannot POST /api/${path}`
+    || error?.message === `Route POST:/api/${path} not found`;
 }
 
 export function createApiClient(config, fetchImpl = globalThis.fetch) {
@@ -58,22 +59,25 @@ export function createApiClient(config, fetchImpl = globalThis.fetch) {
         signal,
       });
       if (!response.ok) {
-        if (path === 'search-attachments' && response.status === 404) {
+        if (['search-attachments', 'pages/sync-state', 'pages/sync-update'].includes(path) && response.status === 404) {
           let missing = false;
-          try { missing = await missingAttachmentRoute(response); }
+          try { missing = await missingRoute(response, path); }
           catch { signal.throwIfAborted(); }
           if (missing)
-            throw failure('UNSUPPORTED_DEPLOYMENT', 'This deployment does not expose /api/search-attachments. Attachment search requires a compatible endpoint, provided by this fork.', 404);
+            throw failure('UNSUPPORTED_DEPLOYMENT', path === 'search-attachments'
+              ? 'This deployment does not expose /api/search-attachments. Attachment search requires a compatible endpoint, provided by this fork.'
+              : 'This deployment does not expose the conditional Markdown sync endpoint. Deploy a compatible server; automatic uploads will not use unconditional page updates.', 404);
         }
         // Error-body cleanup must not replace an already known HTTP status.
         await response.body?.cancel().catch(() => {});
-        const codes = { 400: 'INVALID_REQUEST', 401: 'UNAUTHENTICATED', 403: 'FORBIDDEN', 404: 'NOT_FOUND', 429: 'RATE_LIMITED' };
+        const codes = { 400: 'INVALID_REQUEST', 401: 'UNAUTHENTICATED', 403: 'FORBIDDEN', 404: 'NOT_FOUND', 409: 'CONFLICT', 429: 'RATE_LIMITED' };
         const hints = {
           401: config.authMode === 'session'
             ? 'The personal session has expired or been revoked. Run --login in your own terminal; passwords must not be sent through MCP tools or chat.'
             : 'Docmost rejected the credential. Check Token expiry/revocation and native API Key support/license in the target deployment.',
           403: 'Docmost denied this operation for the Token user or endpoint.',
           404: 'Docmost could not find the resource or endpoint.',
+          409: 'Docmost rejected the update because the resource changed. Read the current resource and resolve the conflict before retrying.',
           429: 'Docmost rate-limited the request. No automatic retry was made.',
         };
         throw failure(codes[response.status] ?? 'REQUEST_FAILED', hints[response.status] ?? 'Docmost returned an unsuccessful response.', response.status);
