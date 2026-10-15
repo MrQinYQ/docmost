@@ -1,6 +1,6 @@
 ---
 name: docmost-mcp
-description: 用于从 GitHub 安装配置本地 Docmost MCP、社区版个人会话登录、部署域名和默认位置、本地 Markdown 自动同步，以及通过已连接工具检索或维护授权页面、空间、评论与附件。不用于 Docmost 服务器开发、许可绕过或本地快照。
+description: 用于从 GitHub 安装配置本地 Docmost MCP、社区版个人会话登录、部署域名和默认位置、本地 Markdown 自动同步、可选知识库接入，以及通过已连接工具检索或维护授权页面、空间、评论与附件。不用于 Docmost 服务器开发、许可绕过或本地快照。
 ---
 
 # Docmost MCP
@@ -10,6 +10,10 @@ description: 用于从 GitHub 安装配置本地 Docmost MCP、社区版个人�
 ## 安装配置
 
 用户要求安装、接入、修改部署/默认位置，或明确授权解决连接配置时，读取 [安装配置](references/setup.md)。该参考随 Skill 一起安装，不依赖原仓库目录。确认部署 URL、客户端、安装位置和作用域；已有信息不重复询问。用户已授权选定范围的安装时可执行构建和配置合并，保留已有设置。
+
+标准安装必须主动提供“不启用知识库 / OpenViking”选择，已有明确选择和授权直接沿用。新配置显式保存 `DOCMOST_KNOWLEDGE_PROVIDER=none|openviking`：`none` 跳过所有后端地址、Key、身份和私有根问题，并覆盖遗留 OpenViking 变量，不读取 Key 或访问服务；选 OpenViking 时读取 [自动同步](references/markdown-sync.md)，引导既有服务根地址、仓库外私有 Key 文件路径、可选预期账户/用户及私有根。Key 由用户在自己的真实终端隐藏输入保存，Agent 只配置路径。当前仅实现 OpenViking，不安装 ov/Python、不部署服务。已有模型处理及父目录摘要刷新授权直接沿用。
+
+构建后用独立只读 `--check-knowledge` 核对所选后端；它不要求 Docmost 登录、默认空间或 MD 目录，只返回安全状态、身份和根。检查不证明写入、摘要或索引能力；知识库配置错误、不可达或不支持时单独报告，继续可用的 Docmost 接入。省略 provider 且已有 OpenViking URL 仅作为旧安装兼容；切换 provider 不会改投旧持久化任务。
 
 没有企业 API Key 且用户选择邮箱/密码接入时，明确配置 `DOCMOST_AUTH_MODE=session`。将实际路径的 `--login` 命令交给用户，由用户在自己的真实本机终端输入邮箱和隐藏的密码；Agent 不代跑登录、不向聊天索要密码，不把密码放进环境变量、参数、配置或模型输入。CLI 将可撤销的专用会话写入仓库外的私有 `DOCMOST_SESSION_FILE`；Agent 不读取或展示该 JSON 文件。SSO/MFA 或缺少可撤销会话 ID 的旧版登录不支持，说明限制并停止，不绕过认证。企业 API Key 仅作为支持该功能且有许可的部署的备选模式；不自动切换凭据模式。
 
@@ -50,6 +54,8 @@ description: 用于从 GitHub 安装配置本地 Docmost MCP、社区版个人�
 用户要求关联本地 Markdown 或配置保存自动同步时，读取 [自动同步](references/markdown-sync.md)。同步是单向 MD → Docmost，跟随实际 MCP 进程生命周期。目录配置不自动授权上传全部文件；只处理明确绑定并启用的文件。绑定后未来保存会替换整页正文，关联操作本身不初始上传；解释这一行为后按已有授权执行。
 
 发现实际同步工具与 schema：`bind_markdown`、`get_markdown_sync_status`、`set_markdown_sync`、`resolve_markdown_sync`。仅同步专用接口有条件写入保证，普通 `update_page` 仍没有。缺少部署接口时报告不支持，不退回普通更新绕过冲突保护。冲突/待确认状态先读取核对；用户明确选择本地或合并结果后才显式解决，不能从“恢复监听”推导覆盖授权。
+
+知识库只处理这些绑定 MD，不能从安装或目录配置推导工作区导入、网页全文同步或写验收授权。状态使用 `knowledgeBase` 的 provider/启用状态/进度，兼容保留 `openViking`。`retry_knowledge_sync` 只补知识库阶段，OpenViking 兼容别名为 `retry_openviking_sync`；都不重放 Docmost 写入。MD 可写/只读工具数为 26/11，MD 加 OpenViking 为 28/11，仍须发现实际工具。
 
 修改已启用同步的 MD 会产生 Docmost 更新；不要再重复调用普通 `update_page` 上传同一修改。查询状态不触发上传。只读模式、身份或目标空间变化、会话过期时不得继续上传。暂停或解除关联保持两端文件/页面；删除本地文件不自动删除远端。没有实际服务端返回时如实说明未验收，不声称生命周期解决了所有并发问题。
 

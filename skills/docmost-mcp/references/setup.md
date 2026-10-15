@@ -6,6 +6,8 @@
 
 确认部署根 HTTPS URL（如 `https://wiki.example.com`，不含 `/api`）、AI 客户端、源码安装目录和 MCP/Skill 作用域。已有信息不重复询问；用户授权安装并选定作用域后可以构建和合并配置，保留其他设置。检查 Git、Node.js 22+、npm，记录实际 Node 绝对路径；缺少依赖时按授权安装，不擅自改变全局配置。示例为 macOS/Linux，其他系统适配命令、路径和私有权限。
 
+标准安装主动提供“不启用知识库 / OpenViking”选择，不能等用户另外要求才提及。已有明确选择和授权沿用，新配置显式保存 `DOCMOST_KNOWLEDGE_PROVIDER=none|openviking`。选择 `none` 跳过所有后端地址、Key、身份和私有根问题，覆盖遗留 OpenViking 变量，不读取 Key 或访问服务。选择 OpenViking 按[知识库接入](#可选知识库接入)引导已有服务根地址、私有 Key 文件、可选身份和根；只实现这一后端，不自动部署服务。
+
 没有企业 API Key 且用户选择邮箱/密码接入时，明确使用 `DOCMOST_AUTH_MODE=session`。它通过目标部署正常个人登录建立专用可撤销会话，继承当前账号权限，不需要企业 API Key。SSO/MFA 或没有 session ID 的旧版 ACCESS 登录不支持，停止并说明；不抓取浏览器 Cookie、不伪造 JWT、不修改许可检查、不自动更换管理员或切换凭据模式。
 
 兼容默认模式仍为 `api_key`，不能省略模式后期待自动进入社区登录。会话模式拒绝 `DOCMOST_API_TOKEN` / `DOCMOST_API_TOKEN_FILE`，API Key 模式拒绝 `DOCMOST_SESSION_FILE`。需要切换时仅在用户选择的模式下替换对应配置，不保留旧模式的凭据变量。
@@ -26,9 +28,9 @@ npm run --workspaces=false build
 node /absolute/path/docmost-mcp-source/packages/mcp/dist/index.mjs --help
 ```
 
-核对 `--help` 列出 `--login`、`--logout` 和会话配置变量。只安装 MCP 包依赖，不安装整个工作区；不需要 pnpm、npm 发布或 `npm pack`。保留源码和根许可证。入口是 `/absolute/path/docmost-mcp-source/packages/mcp/dist/index.mjs`；包内测试可在包目录运行 `npm run --workspaces=false test`，不能代替目标公司部署验收。
+核对 `--help` 列出 `--login`、`--logout` 和会话配置变量；知识库版本还须包含 `--check-knowledge` 和 `DOCMOST_KNOWLEDGE_PROVIDER`。只安装 MCP 包依赖，不安装整个工作区；不需要 pnpm、npm 发布或 `npm pack`。保留源码和根许可证。入口是 `/absolute/path/docmost-mcp-source/packages/mcp/dist/index.mjs`；包内测试可在包目录运行 `npm run --workspaces=false test`，不能代替目标公司部署验收。
 
-已有安装升级时，在客户端配置实际指向的源码目录核对 `git status --short`，保留本地改动；无冲突后 `git pull --ff-only`，在 `packages/mcp` 重新执行上述单包 install/build，并比较更新已授权作用域的 Skill。重启 MCP 连接重新发现工具，正常模式应为 22 个，只读模式为 10 个；旧进程或其他目录的构建不会自动更新当前连接。部署域名、默认空间/父页和仓库外凭据不需因升级重设。
+已有安装升级时，在客户端配置实际指向的源码目录核对 `git status --short`，保留本地改动；无冲突后 `git pull --ff-only`，在 `packages/mcp` 重新执行上述单包 install/build，并比较更新已授权作用域的 Skill。重启 MCP 连接重新发现工具，基础可写/只读模式为 22/10；MD 为 26/11，MD 加 OpenViking 为 28/11。旧进程或其他目录的构建不会自动更新当前连接。部署域名、默认空间/父页和仓库外凭据不需因升级重设；省略 provider 且已有 OpenViking URL 的旧安装兼容启用，已有明确配置不重复询问。
 
 ## 用户本人在终端登录
 
@@ -98,6 +100,7 @@ claude mcp add --scope user --transport stdio \
   --env DOCMOST_SESSION_FILE=/Users/your-name/.config/docmost/session.json \
   --env DOCMOST_DEFAULT_SPACE_ID=11111111-1111-4111-8111-111111111111 \
   --env DOCMOST_READ_ONLY=0 \
+  --env DOCMOST_KNOWLEDGE_PROVIDER=none \
   docmost -- /absolute/path/to/node /absolute/path/docmost-mcp-source/packages/mcp/dist/index.mjs
 claude mcp get docmost
 ```
@@ -111,6 +114,7 @@ codex mcp add docmost \
   --env DOCMOST_SESSION_FILE=/Users/your-name/.config/docmost/session.json \
   --env DOCMOST_DEFAULT_SPACE_ID=11111111-1111-4111-8111-111111111111 \
   --env DOCMOST_READ_ONLY=0 \
+  --env DOCMOST_KNOWLEDGE_PROVIDER=none \
   -- /absolute/path/to/node /absolute/path/docmost-mcp-source/packages/mcp/dist/index.mjs
 codex mcp list
 ```
@@ -128,10 +132,40 @@ DOCMOST_AUTH_MODE = "session"
 DOCMOST_SESSION_FILE = "/Users/your-name/.config/docmost/session.json"
 DOCMOST_DEFAULT_SPACE_ID = "11111111-1111-4111-8111-111111111111"
 DOCMOST_READ_ONLY = "0"
+DOCMOST_KNOWLEDGE_PROVIDER = "none"
 # DOCMOST_DEFAULT_PARENT_PAGE_ID = "22222222-2222-4222-8222-222222222222"
 ```
 
 可选 `DOCMOST_TIMEOUT_MS` 默认 `30000`，范围 `100`–`120000` 毫秒；`DOCMOST_ALLOW_LOCAL_HTTP=1` 仅允许本机 loopback 调试，远程仍需 HTTPS。重启连接后检查工具。[Claude Code MCP 文档](https://code.claude.com/docs/en/mcp)、[OpenAI MCP 文档](https://learn.chatgpt.com/docs/extend/mcp?surface=cli)
+
+## 可选知识库接入
+
+上述客户端配置示例对应“不启用知识库”；选 OpenViking 时将 provider 改为 `openviking` 并合并以下变量，保留 Docmost 认证和默认位置。先引导用户说明各项；已有明确设置直接使用。
+
+| 变量 | 引导内容 |
+| --- | --- |
+| `DOCMOST_OPENVIKING_URL` | 既有服务根地址，远程 HTTPS 或本机 loopback HTTP，不带 `/api/v1`、查询或凭据。明确选 OpenViking 时必填。 |
+| `DOCMOST_OPENVIKING_API_KEY_FILE` | 仓库外私有 Key 文件绝对路径，当前用户所有的普通文件 `0600`，非符号链接。Agent 只配置路径。 |
+| `DOCMOST_OPENVIKING_ACCOUNT` / `DOCMOST_OPENVIKING_USER` | 可选预期账户和用户，仅校验 Key 返回身份；不能用它们切换 Key 所属用户。 |
+| `DOCMOST_OPENVIKING_ROOT_URI` | 可选用户私有资源根，默认 `viking://user/<鉴权确认用户>/resources/docmost-mcp`。 |
+| `DOCMOST_OPENVIKING_TIMEOUT_MS` | 可选单次 HTTP 超时，默认 30000 毫秒，范围 100–120000。 |
+
+Key 由部署管理员给用户本人；用户在自己的真实 Bash/Zsh 终端隐藏输入并保存到仓库外私有文件。Agent 不索要、读取、回显或记录 Key，不代跑私密输入，不借用 Docmost 凭据。可交给用户的隐藏输入命令见随 Skill 安装的 [MD 与知识库参考](markdown-sync.md#openviking-key-私密保存)。无需安装 ov CLI、Python 或额外 npm 包，不自动部署 OpenViking。
+
+知识库同步仍需用户选择允许绑定的 `DOCMOST_SYNC_ROOT` 和独立私有 `DOCMOST_SYNC_STATE_DIR`；目录不自动导入工作区。已绑定正文会交给该服务配置的模型处理，首次写入或删除可能刷新祖先目录摘要。明确目标、用途与授权范围；已有明确模型处理和摘要刷新授权直接沿用，不重复确认。
+
+构建后可以先做独立只读检查，无需 Docmost 登录、默认空间或 MD 目录：
+
+```sh
+DOCMOST_KNOWLEDGE_PROVIDER=openviking \
+DOCMOST_OPENVIKING_URL=https://openviking.example.com \
+DOCMOST_OPENVIKING_API_KEY_FILE=/Users/your-name/.config/docmost/openviking-key \
+node /absolute/path/docmost-mcp-source/packages/mcp/dist/index.mjs --check-knowledge
+```
+
+若已有可选身份、根或超时变量，带入相同设置。选择 `none` 时仅设置 `DOCMOST_KNOWLEDGE_PROVIDER=none` 运行同一命令，返回关闭状态，不读取遗留 Key 或访问服务。省略 provider 且 URL 非空仅为旧安装兼容推断 OpenViking；明确 OpenViking 但 URL 缺失独立阻塞，其他 provider 独立报告不支持，不自动回退。
+
+检查只输出安全状态、鉴权身份与私有根，不创建、上传、重建或删除资源；配置错误、鉴权或网络失败只使此检查非零，不阻止普通 Docmost 工具。通过检查不能证明写权限、摘要或索引完成，实际验收须有用户对测试对象及模型处理的授权。切换 provider、地址、身份或根不改投旧持久化任务，先核对旧状态。同步工具、通用重试与兼容状态见 [MD 与知识库参考](markdown-sync.md)。
 
 ## API Key 备选模式
 

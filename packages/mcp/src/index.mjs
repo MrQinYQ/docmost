@@ -7,6 +7,8 @@ import { promptCredentials } from './prompt.mjs';
 import { loadSession, loginSession, saveSession, removeSession, logoutSession } from './session.mjs';
 import { checkConnection, createDocmostServer, listAccessibleSpaces } from './server.mjs';
 import { createMarkdownSync } from './sync.mjs';
+import { loadKnowledgeConfig } from './knowledge-config.mjs';
+import { checkKnowledgeConnection } from './knowledge.mjs';
 
 async function login(config) {
   try {
@@ -48,7 +50,11 @@ async function logout(config) {
 try {
   const args = process.argv.slice(2);
   if (args.length === 1 && args[0] === '--help') {
-    process.stdout.write('Docmost local MCP (stdio)\nRequired: DOCMOST_URL, DOCMOST_DEFAULT_SPACE_ID and an explicit credential source.\nCommunity: DOCMOST_AUTH_MODE=session and DOCMOST_SESSION_FILE (private absolute path).\nAPI Key: DOCMOST_AUTH_MODE=api_key (compatibility default) and DOCMOST_API_TOKEN or DOCMOST_API_TOKEN_FILE.\nOptional: DOCMOST_DEFAULT_PARENT_PAGE_ID, DOCMOST_READ_ONLY=1, DOCMOST_TIMEOUT_MS, DOCMOST_ALLOW_LOCAL_HTTP=1 (loopback only)\nOptional Markdown sync: DOCMOST_SYNC_ROOT and DOCMOST_SYNC_STATE_DIR (separate absolute directories). Only explicitly bound .md files sync while stdio is running. Requires compatible conditional sync endpoints; no uploads in read-only mode.\n--login performs personal email/password login in your own local terminal; no password is stored.\n--logout revokes only the dedicated personal session and removes its local file.\n--list-spaces [--cursor value] discovers accessible space UUIDs before configuring a default.\nLogin/logout/space discovery do not require a default space.\n--check validates identity, default space and optional parent; without flags starts stdio.\n');
+    process.stdout.write('Docmost local MCP (stdio)\nRequired: DOCMOST_URL, DOCMOST_DEFAULT_SPACE_ID and an explicit credential source.\nCommunity: DOCMOST_AUTH_MODE=session and DOCMOST_SESSION_FILE (private absolute path).\nAPI Key: DOCMOST_AUTH_MODE=api_key (compatibility default) and DOCMOST_API_TOKEN or DOCMOST_API_TOKEN_FILE.\nOptional: DOCMOST_DEFAULT_PARENT_PAGE_ID, DOCMOST_READ_ONLY=1, DOCMOST_TIMEOUT_MS, DOCMOST_ALLOW_LOCAL_HTTP=1 (loopback only)\nOptional Markdown sync: DOCMOST_SYNC_ROOT and DOCMOST_SYNC_STATE_DIR (separate absolute directories). Only explicitly bound .md files sync while stdio is running. Requires compatible conditional sync endpoints; no uploads in read-only mode.\n--login performs personal email/password login in your own local terminal; no password is stored.\n--logout revokes only the dedicated personal session and removes its local file.\n--list-spaces [--cursor value] discovers accessible space UUIDs before configuring a default.\nLogin/logout/space discovery do not require a default space.\nOptional knowledge base: DOCMOST_KNOWLEDGE_PROVIDER=none|openviking; omitted provider preserves a configured legacy OpenViking URL.\n--check-knowledge validates only the selected knowledge-base connection and private namespace; no Docmost login or default space is needed.\n--check validates identity, default space and optional parent; without flags starts stdio.\n');
+  } else if (args.length === 1 && args[0] === '--check-knowledge') {
+    const report = await checkKnowledgeConnection(loadKnowledgeConfig(process.env));
+    process.stdout.write(`${JSON.stringify(report)}\n`);
+    if (!report.success) process.exitCode = 1;
   } else {
     const discovery = args[0] === '--list-spaces';
     const cursor = discovery && args.length === 3 && args[1] === '--cursor' ? args[2] : undefined;
@@ -56,7 +62,7 @@ try {
     const validArgs = args.length === 0 || (args.length === 1 && ['--check', '--list-spaces', '--login', '--logout'].includes(args[0]))
       || (discovery && args.length === 3 && args[1] === '--cursor' && cursor.length > 0 && cursor.length <= 4096);
     if (!validArgs)
-      throw new ConfigError('Supported arguments: --help, --login, --logout, --check, or --list-spaces [--cursor value]. Password arguments are not supported.');
+      throw new ConfigError('Supported arguments: --help, --login, --logout, --check, --check-knowledge, or --list-spaces [--cursor value]. Password arguments are not supported.');
     const config = authentication
       ? loadConnectionConfig(process.env, { requireDefaultSpace: false })
       : await loadConfig(process.env, { requireDefaultSpace: !discovery });

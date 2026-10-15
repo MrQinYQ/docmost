@@ -1,0 +1,15 @@
+# Knowledge adapter implementation
+
+Approved scope: docs/superpowers/specs/2026-10-15-knowledge-adapter.md. Continue in existing dirty feature tree; preserve previous OpenViking work and unrelated .vscode files. Root owns integration and final verification. No commit/push or global configuration edits.
+
+- [x] Backend worker: preserve OV state machine under provider boundary, generic Docmost metadata, legacy provider pinning, readonly connection probe; focused RED/GREEN.
+- [x] Root: provider config/registry/status/runtime, generic sync/index/server integration, canonical retry with legacy alias; fake-adapter and isolation RED/GREEN.
+- [x] Contract worker: selector and standalone CLI tests; none, inferred legacy, explicit missing config, unsupported, identity, redaction and cancellation.
+- [x] Documentation worker: standard install mandatory none/OV selection, conditional setup, root URL/key handling, capability/validation limits, generic developer boundary.
+- [x] Root: independent code/doc review; fix material findings, full MCP test/build and clean single-package check, scoped real smoke and cleanup, record exact evidence.
+
+Ruling: reuse the existing managed feature checkout because this is the approved continuation of the uncommitted OV feature; creating a worktree would omit that implementation. Ruling: explicit none overrides legacy configuration; omitted selector retains existing behavior. Ruling: keep old import paths, environment keys, OV status and retry alias while adding generic APIs, to avoid breaking installed clients.
+
+Complete: backend focused tests121/121, standalone config/CLI20/20, manager/registry/sync61/61 and stdio5/5 passed. An additional coordinator integration test published a confirmed snapshot through a non-OV adapter without accessing OV. The latest full package build and test suite passed325/325; a fresh independent single-package npm install/build/test passed the same325/325 with identical source and tests. Independent review found no substantive P1/P2; documentation scenario review found no missing none/OV/probe boundaries. Shell snippets were checked for syntax only; a copied standalone Skill had seven valid internal relative links, including removal of a checkout-only docs link.
+
+Real provider regression passed8/8 tail and10/10 deletion/restore, with new reports preserving the previous7/9 baseline. Standalone none/OV probes made0/1 readonly HTTP requests, with only GET /health allowed and no Docmost prerequisites. Four fresh full processing tasks succeeded, generic and legacy state matched, and both page directories/raw/L0/L1 plus six scoped level0/1/2 queries were absent before restore. Cleanup completed with no errors: own pages/spaces/root/temp removed, dedicated sessions denied replay401, exact root absence confirmed after queue drain and again at least ten seconds later. This was scoped grouped regression, not a new full-script run or real remoteTLS acceptance. Local Docmost was restarted using its existing isolated supervisor; no global client config changed. No commit or push.

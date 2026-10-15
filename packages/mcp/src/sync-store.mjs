@@ -32,7 +32,7 @@ export async function createSyncStore(path, { readOnly = false } = {}) {
   try { rootInfo = await absoluteDirectory(path); }
   catch (error) { if (readOnly && error.code === 'ENOENT') return { load: async () => [] }; throw fail(); }
   if (!safeDir(rootInfo)) throw fail();
-  const dirs = { bindings: join(path, 'bindings'), leases: join(path, 'leases') };
+  const dirs = { bindings: join(path, 'bindings'), leases: join(path, 'leases'), snapshots: join(path, 'snapshots'), history: join(path, 'history') };
   if (!readOnly) for (const dir of Object.values(dirs)) await makeDirectory(dir);
   const dirInfo = {};
   for (const [name, dir] of Object.entries(dirs)) {
@@ -47,7 +47,7 @@ export async function createSyncStore(path, { readOnly = false } = {}) {
       if (!safeDir(info) || !sameFile(rootInfo, info) || !safeDir(child) || !sameFile(dirInfo[name], child)) throw fail();
     } catch { throw fail(); }
   }
-  async function read(pathname, name) {
+  async function read(pathname, name, raw = false) {
     await check(name);
     let handle;
     try {
@@ -56,35 +56,94 @@ export async function createSyncStore(path, { readOnly = false } = {}) {
       handle = await open(pathname, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
       const opened = await handle.stat();
       if (!safeFile(opened) || !sameFile(before, opened)) throw fail();
-      const text = await handle.readFile({ encoding: 'utf8' });
+      const bytes = await handle.readFile();
+      const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
       if (Buffer.byteLength(text) > 1_000_000) throw fail();
       await check(name);
       if (!sameFile(opened, await lstat(pathname))) throw fail();
-      return JSON.parse(text);
+      return raw ? text : JSON.parse(text);
     } catch (error) { if (error.code === 'ENOENT') throw error; throw fail(); }
     finally { await handle?.close(); }
   }
-  async function atomicWrite(filename, value) {
+  async function atomicWrite(filename, value, name = 'bindings', raw = false) {
     if (readOnly) throw fail();
-    await check('bindings');
-    const path = join(dirs.bindings, filename);
+    await check(name);
+    const path = join(dirs[name], filename);
     try { if (!safeFile(await lstat(path))) throw fail(); }
     catch (error) { if (error.code !== 'ENOENT') throw fail(); }
-    const temp = join(dirs.bindings, `.${filename}.${randomUUID()}.tmp`);
+    const temp = join(dirs[name], `.${filename}.${randomUUID()}.tmp`);
     let handle;
     try {
       handle = await open(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
-      await handle.writeFile(JSON.stringify(value));
+      await handle.writeFile(raw ? value : JSON.stringify(value));
       await handle.sync();
       await handle.close(); handle = undefined;
-      await check('bindings');
+      await check(name);
       await rename(temp, path);
-      const dir = await open(dirs.bindings, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+      const dir = await open(dirs[name], constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
       try { await dir.sync(); } finally { await dir.close(); }
     } catch { throw fail(); }
     finally { await handle?.close(); await unlink(temp).catch(() => {}); }
   }
+  function snapshotName(bindingId, hash) {
+    if (!/^[0-9a-f-]{36}$/.test(bindingId) || !/^[0-9a-f]{64}$/.test(hash)) throw fail();
+    return `${bindingId}-${hash}.md`;
+  }
   return {
+    async saveSnapshot(bindingId, { hash, content }) {
+      const filename = snapshotName(bindingId, hash);
+      if (typeof content !== 'string' || Buffer.byteLength(content) > 1_000_000 || digest(content) !== hash) throw fail();
+      await atomicWrite(filename, content, 'snapshots', true);
+    },
+    async readSnapshot(bindingId, hash) {
+      const content = await read(join(dirs.snapshots, snapshotName(bindingId, hash)), 'snapshots', true);
+      if (digest(content) !== hash) throw fail();
+      return content;
+    },
+    async removeSnapshot(bindingId, hash) {
+      const pathname = join(dirs.snapshots, snapshotName(bindingId, hash));
+      try { await read(pathname, 'snapshots', true); await unlink(pathname); }
+      catch (error) { if (error.code !== 'ENOENT') throw error; }
+    },
+    async pruneSnapshots(bindingId, retained) {
+      if (!/^[0-9a-f-]{36}$/.test(bindingId) || retained.some(hash => !/^[0-9a-f]{64}$/.test(hash))) throw fail();
+      await check('snapshots');
+      const files = (await readdir(dirs.snapshots)).filter(name => name.startsWith(`${bindingId}-`) && !name.startsWith('.'));
+      if (files.length > 5000) throw fail();
+      for (const name of files) {
+        const match = name.match(/^[0-9a-f-]{36}-([0-9a-f]{64})\.md$/);
+        if (!match) throw fail();
+        if (retained.includes(match[1])) continue;
+        const pathname = join(dirs.snapshots, name);
+        await read(pathname, 'snapshots', true); await unlink(pathname);
+      }
+    },
+    async archiveMirror(binding) {
+      if (!binding.mirror) return;
+      if (!/^[0-9a-f-]{36}$/.test(binding.bindingId)) throw fail();
+      const key = digest(`${binding.origin}|${binding.workspaceId}|${binding.pageId}`);
+      // A later association to the same page must not erase the task fence
+      // retained when an earlier association was explicitly removed.
+      await atomicWrite(`${key}-${binding.bindingId}.json`, { bindingId: binding.bindingId, origin: binding.origin, workspaceId: binding.workspaceId, pageId: binding.pageId, mirror: binding.mirror, active: false }, 'history');
+    },
+    async loadMirrorHistory() {
+      if (!dirInfo.history) return [];
+      await check('history');
+      const files = (await readdir(dirs.history)).filter(name => !name.startsWith('.'));
+      if (files.length > 5000 || files.some(name => !/^[0-9a-f]{64}(?:-[0-9a-f-]{36})?\.json$/.test(name))) throw fail();
+      const values = [];
+      for (const filename of files) {
+        const value = await read(join(dirs.history, filename), 'history');
+        if (!value || typeof value !== 'object' || Array.isArray(value) || value.active !== false
+          || ['origin', 'workspaceId', 'pageId'].some(field => typeof value[field] !== 'string' || !value[field])
+          || Object.keys(value).some(field => !['bindingId', 'origin', 'workspaceId', 'pageId', 'mirror', 'active'].includes(field))) throw fail();
+        const key = digest(`${value.origin}|${value.workspaceId}|${value.pageId}`);
+        const expected = value.bindingId === undefined ? `${key}.json` : `${key}-${value.bindingId}.json`;
+        if (filename !== expected || (value.bindingId !== undefined && !/^[0-9a-f-]{36}$/.test(value.bindingId))) throw fail();
+        values.push({ filename, value });
+      }
+      return values;
+    },
     async load() {
       if (!dirInfo.bindings) return [];
       await check('bindings');

@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { ConfigError } from './errors.mjs';
 import { loadSession } from './session.mjs';
+import { loadKnowledgeConfig } from './knowledge-config.mjs';
 
 export { ConfigError } from './errors.mjs';
 
@@ -70,7 +71,9 @@ export function loadConnectionConfig(env = process.env, { requireDefaultSpace = 
   } else if (sessionFile) {
     throw new ConfigError('API Key mode cannot use DOCMOST_SESSION_FILE. Select exactly one authentication mode.');
   }
-  return { origin: base.origin, apiBase: `${base.origin}/api/`, timeoutMs, readOnly, defaultSpaceId, defaultParentPageId, authMode, sessionFile, allowLocalHttp: localHttp, syncRoot, syncStateDir };
+  const knowledgeBase = loadKnowledgeConfig(env);
+  return { origin: base.origin, apiBase: `${base.origin}/api/`, timeoutMs, readOnly, defaultSpaceId, defaultParentPageId, authMode, sessionFile, allowLocalHttp: localHttp, syncRoot, syncStateDir,
+    knowledgeBase, ...(knowledgeBase?.provider === 'openviking' ? { openViking: knowledgeBase.config } : {}) };
 }
 
 export async function loadConfig(env = process.env, options = {}) {
