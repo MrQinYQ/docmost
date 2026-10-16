@@ -50,7 +50,9 @@ async function connection(t, override) {
 test('optional remote integration exposes retry without ov binary and Docmost read still works', async t => {
   const rpc = await connection(t, { DOCMOST_OPENVIKING_URL: 'https://remote.example.invalid', DOCMOST_OPENVIKING_API_KEY_FILE: '/private/tmp/unused-private-key' });
   const tools = (await rpc.request('tools/list')).result.tools;
-  assert.equal(tools.length, 28); assert.ok(tools.some(x => x.name === 'retry_openviking_sync'));
+  assert.equal(tools.length, 30); assert.ok(tools.some(x => x.name === 'retry_openviking_sync'));
+  assert.ok(tools.some(x => x.name === 'sync_page_to_knowledge'));
+  assert.ok(tools.some(x => x.name === 'get_page_knowledge_status'));
   assert.ok(tools.some(x => x.name === 'retry_knowledge_sync'));
   const current = (await rpc.request('tools/call', { name: 'get_current_user', arguments: {} })).result;
   assert.notEqual(current.isError, true); assert.equal(JSON.parse(current.content[0].text).user.id, userId);
@@ -64,7 +66,9 @@ test('absent URL ignores other OV settings without requiring local installation'
 test('invalid optional configuration and readonly mode preserve Docmost discovery', async t => {
   const rpc = await connection(t, { DOCMOST_OPENVIKING_URL: 'invalid', DOCMOST_READ_ONLY: '1' });
   const tools = (await rpc.request('tools/list')).result.tools;
-  assert.equal(tools.length, 11); assert.ok(!tools.some(x => x.name === 'retry_openviking_sync'));
+  assert.equal(tools.length, 12); assert.ok(!tools.some(x => x.name === 'retry_openviking_sync'));
+  assert.ok(tools.some(x => x.name === 'get_page_knowledge_status'));
+  assert.ok(!tools.some(x => x.name === 'sync_page_to_knowledge'));
   assert.ok(!tools.some(x => x.name === 'retry_knowledge_sync'));
 });
 
@@ -79,7 +83,7 @@ test('explicit none overrides stale provider settings and reports disabled throu
 test('unsupported provider stays separate from Docmost and does not register an OpenViking alias', async t => {
   const rpc = await connection(t, { DOCMOST_KNOWLEDGE_PROVIDER: 'not-supported', DOCMOST_OPENVIKING_URL: 'https://remote.example.invalid', DOCMOST_OPENVIKING_API_KEY_FILE: '/does/not/exist' });
   const tools = (await rpc.request('tools/list')).result.tools;
-  assert.equal(tools.length, 27); assert.ok(tools.some(x => x.name === 'retry_knowledge_sync'));
+  assert.equal(tools.length, 29); assert.ok(tools.some(x => x.name === 'retry_knowledge_sync'));
   assert.ok(!tools.some(x => x.name === 'retry_openviking_sync'));
   const current = (await rpc.request('tools/call', { name: 'get_current_user', arguments: {} })).result;
   assert.notEqual(current.isError, true);

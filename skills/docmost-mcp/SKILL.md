@@ -1,6 +1,6 @@
 ---
 name: docmost-mcp
-description: 用于从 GitHub 安装配置本地 Docmost MCP、社区版个人会话登录、部署域名和默认位置、本地 Markdown 自动同步、可选知识库接入，以及通过已连接工具检索或维护授权页面、空间、评论与附件。不用于 Docmost 服务器开发、许可绕过或本地快照。
+description: 用于安装更新 Docmost MCP、社区版个人会话登录、部署与默认位置配置、已有 Docmost 页面入库和后续知识库同步、本地 Markdown 保存自动上传，以及检索或维护授权页面、空间、评论和附件。不用于服务器开发、许可绕过或本地快照。
 ---
 
 # Docmost MCP
@@ -11,7 +11,9 @@ description: 用于从 GitHub 安装配置本地 Docmost MCP、社区版个人�
 
 用户要求安装、接入、修改部署/默认位置，或明确授权解决连接配置时，读取 [安装配置](references/setup.md)。该参考随 Skill 一起安装，不依赖原仓库目录。确认部署 URL、客户端、安装位置和作用域；已有信息不重复询问。用户已授权选定范围的安装时可执行构建和配置合并，保留已有设置。
 
-标准安装必须主动提供“不启用知识库 / OpenViking”选择，已有明确选择和授权直接沿用。新配置显式保存 `DOCMOST_KNOWLEDGE_PROVIDER=none|openviking`：`none` 跳过所有后端地址、Key、身份和私有根问题，并覆盖遗留 OpenViking 变量，不读取 Key 或访问服务；选 OpenViking 时读取 [自动同步](references/markdown-sync.md)，引导既有服务根地址、仓库外私有 Key 文件路径、可选预期账户/用户及私有根。Key 由用户在自己的真实终端隐藏输入保存，Agent 只配置路径。当前仅实现 OpenViking，不安装 ov/Python、不部署服务。已有模型处理及父目录摘要刷新授权直接沿用。
+标准安装必须主动提供“不启用知识库 / OpenViking”选择，已有明确选择和授权直接沿用。新配置显式保存 `DOCMOST_KNOWLEDGE_PROVIDER=none|openviking`：`none` 跳过所有后端问题并覆盖遗留 OpenViking 变量，不读 Key 或访问服务；选 OpenViking 时读取 [知识库同步](references/knowledge-sync.md)，引导既有连接、个人/共享资源模式、私有 Key 文件与私有状态目录。已有页面同步不需要 MD 源目录、绑定或条件同步接口。Key 由用户本人在真实终端隐藏输入保存，Agent 只配置路径；不安装 ov/Python、不部署服务。已有模型处理及父目录摘要刷新授权直接沿用。
+
+选择 OpenViking 后必须引导 `DOCMOST_OPENVIKING_SCOPE=personal|shared`，默认个人。共享使用同一 account 的 `viking://resources/docmost-mcp` 并继承目标 ACL，不复制 Docmost 权限。旧个人连接不可直接改根迁入共享；保留旧连接，另设共享连接与独立私有知识库状态目录，明确同步获准共享的页面。空间名和完整父链构成可读目录，ID 留在账本，仅名称冲突时加短后缀。细节及双连接跟进范围见知识库同步参考。
 
 构建后用独立只读 `--check-knowledge` 核对所选后端；它不要求 Docmost 登录、默认空间或 MD 目录，只返回安全状态、身份和根。检查不证明写入、摘要或索引能力；知识库配置错误、不可达或不支持时单独报告，继续可用的 Docmost 接入。省略 provider 且已有 OpenViking URL 仅作为旧安装兼容；切换 provider 不会改投旧持久化任务。
 
@@ -21,7 +23,7 @@ description: 用于从 GitHub 安装配置本地 Docmost MCP、社区版个人�
 
 ## 连接与定位
 
-发现当前连接实际提供的 Docmost 工具，名称可能带客户端前缀，使用实际名称和 schema，不硬编码旧版十工具清单。当前本地包对齐官方公开的 20 个工具能力，另有软删除/恢复两个扩展；可写模式注册 22 个工具（10 个读取、12 个写入），只读模式注册 10 个读取工具。能力、参数或操作细节见 [工具约定](references/tool-contract.md)。官方指南未公布输入 schema，本地按实际 REST DTO 实现，不把公开能力对齐表述成与私有企业实现完全一致。
+发现当前连接实际提供的 Docmost 工具，名称可能带客户端前缀，使用实际名称和 schema，不依赖旧工具总数。基础工具对齐官方公开能力，另有软删除/恢复、可选 MD 和知识库扩展；按当前配置核对所需工具。能力、参数或操作细节见 [工具约定](references/tool-contract.md)。官方指南未公布输入 schema，本地按实际 REST DTO 实现，不把公开能力对齐表述成与私有企业实现完全一致。
 
 如果相关工具未连接或无法发现，说明缺少 MCP 连接并停止依赖它的文档操作；用户要求安装/修复配置时转到安装参考。不要偷偷改用 HTTP、浏览器、数据库或抓取登录 Cookie；用户另行选择其他接入方式后再处理。
 
@@ -49,13 +51,23 @@ description: 用于从 GitHub 安装配置本地 Docmost MCP、社区版个人�
 
 当前 API 不提供本 Skill 可依赖的条件写入保证。大幅替换前重新读取以减少覆盖他人新内容的风险；不要宣称编辑是原子比较并交换。
 
+## 已有 Docmost 页面同步到知识库
+
+用户要求“把现有/刚创建/刚修改页面同步到知识库或 OpenViking”“入库并跟进以后修改”时，优先读取 [知识库同步](references/knowledge-sync.md)，通过 `get_page` 取得规范 UUID 后调用 `sync_page_to_knowledge({pageId})`。工具读取当前已保存的完整 Markdown 并登记后续 MCP 修改跟进；不把追加增量、搜索片段或摘要当作原文，不强行建立 MD 绑定，也不默认退回 `ov` CLI 或 `add-resource`。普通 `create_page` 不会自动开启外发，用户要求创建并入库时须显式调用同步工具。
+
+`get_page_knowledge_status({pageId?})` 只读查看登记、`bindingId`、精确 URI、原文哈希与错误，不触发外发。需要补处理时用返回的 `bindingId` 调用 `retry_knowledge_sync`，不重放 Docmost 写入。分别报告 Docmost 结果与知识库排队/处理/失败；工具缺失、未配置、未登记、只读、权限或目标变化按实际错误处理，不声称已成功入库。
+
+同页上一笔正文保存尚未确认时，再次正文更新返回 `SAVE_PENDING`，这次尚未派发 Docmost 修改。等待并读回确认后再执行本次请求，不重复上一笔成功写入。若已保存内容不变仍在等待，先读回确认，再显式同步当前已保存完整快照；不把它当作尚未落库修改已完成的证明。
+
+登记后，本 MCP 的正文/标题更新、移动该页或其祖先、跨空间移动、软删除/恢复会跟进登记页；网页直接修改没有后台监听，保存后再次显式同步。仅处理用户明确授权的页面和目的地，不全量导入工作区，不迁移或清理旧 CLI 导入。完整原文读回与哈希、摘要/向量任务和检索分别核验；改名/移动/删除等验收用已授权测试副本，不能改业务原文来证明同步能力。
+
 ## 本地 MD 自动同步
 
 用户要求关联本地 Markdown 或配置保存自动同步时，读取 [自动同步](references/markdown-sync.md)。同步是单向 MD → Docmost，跟随实际 MCP 进程生命周期。目录配置不自动授权上传全部文件；只处理明确绑定并启用的文件。绑定后未来保存会替换整页正文，关联操作本身不初始上传；解释这一行为后按已有授权执行。
 
 发现实际同步工具与 schema：`bind_markdown`、`get_markdown_sync_status`、`set_markdown_sync`、`resolve_markdown_sync`。仅同步专用接口有条件写入保证，普通 `update_page` 仍没有。缺少部署接口时报告不支持，不退回普通更新绕过冲突保护。冲突/待确认状态先读取核对；用户明确选择本地或合并结果后才显式解决，不能从“恢复监听”推导覆盖授权。
 
-知识库只处理这些绑定 MD，不能从安装或目录配置推导工作区导入、网页全文同步或写验收授权。状态使用 `knowledgeBase` 的 provider/启用状态/进度，兼容保留 `openViking`。`retry_knowledge_sync` 只补知识库阶段，OpenViking 兼容别名为 `retry_openviking_sync`；都不重放 Docmost 写入。MD 可写/只读工具数为 26/11，MD 加 OpenViking 为 28/11，仍须发现实际工具。
+MD 链路的知识库状态仍使用 `knowledgeBase` 的 provider/启用状态/进度，兼容保留 `openViking`。`retry_knowledge_sync` 只补知识库阶段，OpenViking 兼容别名为 `retry_openviking_sync`；都不重放 Docmost 写入。已有页面主动入库走上一节，无需 MD 绑定；MD 配置本身不授权工作区导入或写验收，仍须发现实际工具。
 
 修改已启用同步的 MD 会产生 Docmost 更新；不要再重复调用普通 `update_page` 上传同一修改。查询状态不触发上传。只读模式、身份或目标空间变化、会话过期时不得继续上传。暂停或解除关联保持两端文件/页面；删除本地文件不自动删除远端。没有实际服务端返回时如实说明未验收，不声称生命周期解决了所有并发问题。
 

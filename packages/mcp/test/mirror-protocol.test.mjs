@@ -37,6 +37,7 @@ async function fixture({ prune = true, deletionReady } = {}) {
     assert.fail(`Unexpected Docmost operation ${path}`);
   };
   const layout = await resolveMirrorLayout({ rootUri, origin: docOrigin, workspaceId: ids.workspace, pageId: ids.page }, post);
+  binding.mirror.nodes = layout.nodes;
   events.length = 0;
   const client = {
     async identity() { return target; },
@@ -76,6 +77,26 @@ async function settle(f, turns = 15) {
   }
   assert.fail('mirror protocol did not settle in bounded turns');
 }
+
+test('an offline personal publication cannot become a shared publication before first authenticated target', async () => {
+  const f = await fixture(); f.binding.mirror = undefined;
+  await f.mirror.prepare(f.binding, { hash: oldHash, content: oldSource });
+  f.mirror.confirm(f.binding, { localHash: oldHash, proposedRevision: oldRevision });
+  f.client.identity = async () => { throw Object.assign(new Error('offline'), { code: 'OV_NETWORK_ERROR' }); };
+  await f.mirror.process(f.binding);
+  assert.equal(f.binding.mirror.target, undefined);
+  const shared = 'viking://resources/docmost-mcp';
+  f.client.identity = async () => ({ accountId: 'personal', userId: 'test', rootUri: shared });
+  const mirror = createMirror({ ...f.config, openViking: { origin: f.config.openViking.origin, scope: 'shared', rootUri: shared } },
+    { client: f.client, post: f.post, store: { async readSnapshot() { return oldSource; } }, persist: f.persist, signal: f.controller.signal });
+  await mirror.retry(f.binding); await mirror.process(f.binding);
+  assert.equal(f.binding.mirror.errorCode, 'OV_TARGET_CHANGED');
+  assert.equal(f.events.some(event => event.type === 'write' || event.type === 'reindex'), false);
+  delete f.binding.mirror.destination; // Legacy offline tasks predate scope support.
+  await mirror.retry(f.binding); await mirror.process(f.binding);
+  assert.equal(f.binding.mirror.errorCode, 'OV_TARGET_CHANGED');
+  assert.equal(f.events.some(event => event.type === 'write' || event.type === 'reindex'), false);
+});
 
 test('preparing or discarding cannot delete snapshots still referenced by the last durable ledger', async () => {
   const f = await fixture({ prune: false });
@@ -188,7 +209,7 @@ test('explicit metadata relayout can cross a fixed space guard while the body re
   f.binding.mirror.pending = { ...f.body(oldHash, oldRevision), purpose: 'layout', allowSpaceChange: true };
   await settle(f);
   assert.equal(f.binding.mirror.state, 'synced');
-  assert.ok(f.binding.mirror.uri.includes(`Other--${ids.otherSpace}`));
+  assert.ok(f.binding.mirror.uri.includes('/Other/'));
   assert.equal(f.resources.get(f.binding.mirror.uri), oldSource);
   assert.equal(f.binding.errorCode, 'TARGET_CHANGED', 'relocation does not quietly rebind local body uploads');
 });
@@ -202,7 +223,7 @@ test('a confirmed layout successor can reconcile a paused old write before movin
   f.binding.mirror.next = { ...f.body(oldHash, oldRevision), purpose: 'layout', allowSpaceChange: true };
   await settle(f);
   assert.equal(f.binding.mirror.state, 'synced');
-  assert.ok(f.binding.mirror.uri.includes(`Other--${ids.otherSpace}`));
+  assert.ok(f.binding.mirror.uri.includes('/Other/'));
   assert.equal(f.resources.get(f.binding.mirror.uri), oldSource);
 });
 

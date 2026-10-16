@@ -2,7 +2,7 @@ import { constants } from 'node:fs';
 import { open, lstat } from 'node:fs/promises';
 import { isAbsolute, parse, join, relative } from 'node:path';
 import { ApiError } from './errors.mjs';
-import { validOpenVikingIdentifier, validOpenVikingUri } from './openviking-config.mjs';
+import { validOpenVikingIdentifier, validOpenVikingUri, openVikingUriMatchesUser } from './openviking-config.mjs';
 
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
 const MAX_SOURCE_BYTES = 1_000_000;
@@ -79,10 +79,10 @@ export function createOpenVikingClient(config, { fetchImpl = globalThis.fetch } 
   const clean = value => value === undefined ? undefined : JSON.parse(redact(JSON.stringify(value)));
   const failRequest = message => new ApiError('OV_INVALID_REQUEST', message);
   function checkUri(uri) {
-    if (!validOpenVikingUri(uri)) throw failRequest('OpenViking operations require a safe private resource URI.');
+    if (!validOpenVikingUri(uri)) throw failRequest('OpenViking operations require a safe resource URI.');
     const expectedRoot = confirmedIdentity?.rootUri ?? config?.rootUri;
     const expectedUser = confirmedIdentity?.userId ?? config?.userId;
-    if (expectedUser && uri.split('/')[3] !== expectedUser) throw failRequest('OpenViking resource URI is outside the configured user.');
+    if (expectedUser && !openVikingUriMatchesUser(uri, expectedUser)) throw failRequest('OpenViking resource URI is outside the configured user.');
     if (expectedRoot && uri !== expectedRoot && !uri.startsWith(`${expectedRoot}/`)) throw failRequest('OpenViking resource URI is outside the configured mirror root.');
   }
   function checkTaskId(id) {
@@ -197,8 +197,8 @@ export function createOpenVikingClient(config, { fetchImpl = globalThis.fetch } 
     const data = await request('', { cancellation: signal, health: true });
     if (data.status !== 'ok' || data.healthy !== true || !validOpenVikingIdentifier(data.account_id) || !validOpenVikingIdentifier(data.user_id) || !['admin', 'user'].includes(data.role)) throw invalid();
     const rootUri = config.rootUri ?? `viking://user/${data.user_id}/resources/docmost-mcp`;
-    if ((config.accountId && config.accountId !== data.account_id) || (config.userId && config.userId !== data.user_id) || rootUri.split('/')[3] !== data.user_id)
-      throw new ApiError('OV_IDENTITY_CHANGED', 'The authenticated OpenViking identity does not match the configured account, user or private mirror root.');
+    if ((config.accountId && config.accountId !== data.account_id) || (config.userId && config.userId !== data.user_id) || !openVikingUriMatchesUser(rootUri, data.user_id))
+      throw new ApiError('OV_IDENTITY_CHANGED', 'The authenticated OpenViking identity does not match the configured account, user or selected resource root.');
     const result = { accountId: data.account_id, userId: data.user_id, role: data.role, rootUri };
     if (confirmedIdentity && (confirmedIdentity.accountId !== result.accountId || confirmedIdentity.userId !== result.userId))
       throw new ApiError('OV_IDENTITY_CHANGED', 'The authenticated OpenViking identity changed. Existing mirror tasks cannot be retargeted.');

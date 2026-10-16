@@ -1,6 +1,10 @@
 # 本地 Markdown 自动同步与可选知识库
 
-用于用户明确请求将本地 MD 关联到 Docmost 并在保存后单向自动上传。跟随实际 MCP 服务进程，没有独立守护进程或文件删除传播。可选知识库适配层当前只实现 HTTP OpenViking，在 Docmost 确认后将本次 MD 快照送到指定个人用户私有目录，生成摘要和向量；只管理明确绑定页，不导入整个工作区或自动导出网页正文。
+用于用户明确请求将本地 MD 关联到 Docmost 并在保存后单向自动上传。跟随实际 MCP 服务进程，没有独立守护进程或文件删除传播。可选知识库适配层当前只实现 HTTP OpenViking，在 Docmost 确认后将本次 MD 快照送到指定个人或共享资源目录，生成摘要和向量；只管理明确绑定页，不导入整个工作区或自动导出网页正文。
+
+需要同步 Docmost 已有页面、但没有本地 MD 时，优先 [页面主动同步](knowledge-sync.md)，不要求这套绑定、源目录或条件同步接口。以下前提和冲突规则只针对本地 MD 链路。
+
+选择 OpenViking 后继续引导“个人（默认）/共享”：配置 `DOCMOST_OPENVIKING_SCOPE=personal|shared`，默认根分别为 `viking://user/<用户>/resources/docmost-mcp` 与 `viking://resources/docmost-mcp`。共享使用同一 account 的目标 ACL，不自动复制 Docmost 权限；已有个人任务不得直接改投共享，应另设连接和独立私有知识库状态目录。目录规则、授权和双连接跟进范围见 [知识库参考](knowledge-sync.md#个人与共享目录)。
 
 ## 接入
 
@@ -8,21 +12,23 @@
 
 服务器必须提供此 fork 的 `pages/sync-state` / `pages/sync-update` 条件同步路由。MCP 安装不会升级服务器。缺少接口报告 `UNSUPPORTED_DEPLOYMENT`，不能退回普通 `update_page`、数据库或浏览器 Cookie 来自动上传。已有邮箱/密码会话方式继续适用；不要求企业 Key，不涉及许可绕过。
 
-配置后发现实际工具与 schema：基础可写/只读为 22/10；MD 为 26/11；MD 加 OpenViking 为 28/11（包含通用重试和旧兼容别名）。只读模式只有状态扩展，不上传，也不写入、重建或删除知识库。状态中报告具体限制，不能以工具注册证明部署支持。
+配置后发现实际工具与 schema，核对 MD 四个入口及启用知识库时的通用重试，不依赖旧工具总数。只读模式只有状态扩展，不上传，也不写入、重建或删除知识库。状态中报告具体限制，不能以工具注册证明部署支持。
 
 ## 可选 OpenViking 接入
 
 标准 MCP/Skill 安装必须主动提供“不启用知识库 / OpenViking”选择；已有明确选择直接沿用。新配置显式保存 `DOCMOST_KNOWLEDGE_PROVIDER=none|openviking`。选择 `none` 时跳过所有后端问题，覆盖遗留 OpenViking 配置，不读取 Key 或访问服务。省略 provider 且已有 URL 只用于旧安装兼容推断 OpenViking；明确选择 OpenViking 却缺 URL 独立阻塞，其他 provider 独立报告不支持，不自动回退。
 
-选择 OpenViking 后引导已有服务根地址、仓库外 Key 文件路径、可选预期账户/用户与私有根；已有设置不重复问。同步仍需前述两个 MD 目录；合并以下配置，保留现有 Docmost 认证：
+选择 OpenViking 后引导已有服务根地址、仓库外 Key 文件路径、可选预期账户/用户与所选模式的资源根；已有设置不重复问。本地 MD 链路仍需前述两个目录；页面主动同步则使用私有 `DOCMOST_KNOWLEDGE_STATE_DIR`（默认复用已有 `DOCMOST_SYNC_STATE_DIR`），不需要源目录或绑定；合并以下配置，保留现有 Docmost 认证：
 
 | 环境变量 | 作用 |
 | --- | --- |
 | `DOCMOST_KNOWLEDGE_PROVIDER` | 明确选择 `none` 或 `openviking`；新安装不依赖兼容推断。 |
+| `DOCMOST_KNOWLEDGE_STATE_DIR` | 页面主动登记的私有绝对状态目录，省略时复用已有 `DOCMOST_SYNC_STATE_DIR`；不改变 MD 链路的源目录和条件写入要求。 |
 | `DOCMOST_OPENVIKING_URL` | 选择 OpenViking 时必需的部署根 URL：远程 HTTPS 或本机 localhost/127.0.0.1/[::1] HTTP；不带 API 路径、凭据、查询或 fragment。 |
 | `DOCMOST_OPENVIKING_API_KEY_FILE` | 选择 OpenViking 时必需，仓库外私有 Key 文件的绝对路径。 |
 | `DOCMOST_OPENVIKING_ACCOUNT` / `DOCMOST_OPENVIKING_USER` | 可选预期账户/用户，只校验鉴权返回身份；Key 决定实际身份。 |
-| `DOCMOST_OPENVIKING_ROOT_URI` | 可选当前用户私有资源根，默认 `viking://user/<已确认用户>/resources/docmost-mcp`。 |
+| `DOCMOST_OPENVIKING_SCOPE` | `personal`（默认）或显式 `shared`。 |
+| `DOCMOST_OPENVIKING_ROOT_URI` | 可选所选模式的具体资源根，默认值见知识库参考。 |
 | `DOCMOST_OPENVIKING_TIMEOUT_MS` | 默认 30000 毫秒，范围 100–120000。 |
 
 通过 HTTP 调用既有服务，无需安装 ov CLI、Python 或额外 npm 包，不自动部署 OpenViking。复用用户指定的现有个人账户和用户；普通个人 Key 由该部署管理员提供，不推断管理员生成接口或菜单。不借用 Docmost 企业 Key、会话 Token 或模型 Key。HTTP200/健康端点可达不能证明 Key 身份，须核对鉴权账户/用户；修改 provider、部署、身份或根不自动迁移旧持久化任务。配置无效或不可达只影响知识库状态，不能把已成功 Docmost 写入改成失败。
@@ -36,7 +42,7 @@ DOCMOST_OPENVIKING_API_KEY_FILE=/Users/your-name/.config/docmost/openviking-key 
 node /absolute/path/docmost-mcp-source/packages/mcp/dist/index.mjs --check-knowledge
 ```
 
-带入已选择的可选身份、根和超时。`none` 仅需 provider 变量即可返回关闭状态；选中后端错误时此检查非零，普通 Docmost 仍独立可用。输出安全状态、身份和私有根，不含 Key；检查不上传、不建目录、不重建或删除，不证明写入、摘要或索引能力。实际验收只使用用户已授权的测试范围。
+带入已选择的可选身份、根和超时。`none` 仅需 provider 变量即可返回关闭状态；选中后端错误时此检查非零，普通 Docmost 仍独立可用。输出安全状态、身份和所选资源根，不含 Key；检查不上传、不建目录、不重建或删除，不证明写入、摘要或索引能力。实际验收只使用用户已授权的测试范围。
 
 ### OpenViking Key 私密保存
 
@@ -71,6 +77,8 @@ Key 由用户在自己的真实 Bash/Zsh 终端隐藏输入，Agent 只配置路
 
 摘要/向量供应商由 OpenViking 服务管理，摘要可能发送到外部模型。配置前明确已绑定正文的目标、目的与授权；复用用户时首次写入及删除可能向上刷新已有资料所在祖先目录的摘要，这也须在授权范围内。已有明确授权直接沿用，不重复确认。摘要刷新授权不包含导入或改写其他原始资料。
 
+共享连接的 `--check-knowledge` 必须带入 `DOCMOST_OPENVIKING_SCOPE=shared` 和该连接实际资源根；检查输出所选资源根，不证明写权限。
+
 ## 工具
 
 | 工具 | 参数 | 作用 |
@@ -90,7 +98,7 @@ Key 由用户在自己的真实 Bash/Zsh 终端隐藏输入，Agent 只配置路
 
 ## 镜像层级与状态
 
-路径为 `<私有根>/<部署 origin 哈希>/<workspace UUID>/<安全空间名--space UUID>/<祖先安全标题--page UUID>/.../<页面安全标题--page UUID>/document.md`，保留 Docmost 层级。名称 NFC 规范化、清洗不安全字符并限制长度，保留可读 Unicode；UUID 区分重名。稳定身份是部署/工作区/页面 UUID，URI 可变。不可访问、缺失、删除、循环祖先或归属不符时暂停，不猜目录。
+路径为 `<所选资源根>/<安全空间名>/<完整祖先安全标题链>/<页面安全标题>/document.md`，保留 Docmost 层级。名称 NFC 规范化、清洗不安全字符并限制长度，保留可读 Unicode；仅冲突时增加稳定短后缀。稳定身份是部署/工作区/页面 UUID，URI 可变。不可访问、缺失、删除、循环祖先或归属不符时暂停，不猜目录。
 
 明确 MCP 改标题/移动后或下次确认 MD 同步会核对布局。新位置处理成功后只删除账本拥有的旧原文及可证明已空的页目录，不递归删除包含子页/未知文件的父目录，不迁移未登记页。跨空间移动不偷偷重绑定 MD 固定目标空间，后续上传仍需重新确认关联。
 

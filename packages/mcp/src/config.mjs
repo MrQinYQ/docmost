@@ -44,6 +44,14 @@ export function loadConnectionConfig(env = process.env, { requireDefaultSpace = 
     if (contains(syncRoot, syncStateDir) || contains(syncStateDir, syncRoot))
       throw new ConfigError('Markdown sync source and private state directories must be separate, with neither containing the other.');
   }
+  let knowledgeStateDir = env.DOCMOST_KNOWLEDGE_STATE_DIR?.trim() || syncStateDir;
+  if (knowledgeStateDir) {
+    if (!isAbsolute(knowledgeStateDir))
+      throw new ConfigError('DOCMOST_KNOWLEDGE_STATE_DIR must be an absolute private state directory.');
+    knowledgeStateDir = resolve(knowledgeStateDir);
+    if (syncRoot && knowledgeStateDir !== syncStateDir)
+      throw new ConfigError('Markdown and page knowledge synchronization must share the same private state directory.');
+  }
 
   function configuredUuid(name) {
     const value = env[name]?.trim();
@@ -72,7 +80,7 @@ export function loadConnectionConfig(env = process.env, { requireDefaultSpace = 
     throw new ConfigError('API Key mode cannot use DOCMOST_SESSION_FILE. Select exactly one authentication mode.');
   }
   const knowledgeBase = loadKnowledgeConfig(env);
-  return { origin: base.origin, apiBase: `${base.origin}/api/`, timeoutMs, readOnly, defaultSpaceId, defaultParentPageId, authMode, sessionFile, allowLocalHttp: localHttp, syncRoot, syncStateDir,
+  return { origin: base.origin, apiBase: `${base.origin}/api/`, timeoutMs, readOnly, defaultSpaceId, defaultParentPageId, authMode, sessionFile, allowLocalHttp: localHttp, syncRoot, syncStateDir: syncStateDir ?? knowledgeStateDir, knowledgeStateDir,
     knowledgeBase, ...(knowledgeBase?.provider === 'openviking' ? { openViking: knowledgeBase.config } : {}) };
 }
 

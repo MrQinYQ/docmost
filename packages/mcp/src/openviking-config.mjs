@@ -9,13 +9,20 @@ export function validOpenVikingIdentifier(value) {
 export function validOpenVikingUri(value) {
   if (typeof value !== 'string' || value.length > 8192 || /[\\?#\u0000-\u001f\u007f]/.test(value)) return false;
   const parts = value.replace(/\/$/, '').split('/');
-  if (parts[0] !== 'viking:' || parts[1] !== '' || parts[2] !== 'user' || !validOpenVikingIdentifier(parts[3]) || parts[4] !== 'resources' || parts.length < 6) return false;
+  if (parts[0] !== 'viking:' || parts[1] !== '') return false;
+  const start = parts[2] === 'resources' ? 3 : 5;
+  if (start === 5 && (parts[2] !== 'user' || !validOpenVikingIdentifier(parts[3]) || parts[4] !== 'resources')) return false;
+  if (parts.length <= start) return false;
   try {
-    return parts.slice(5).every(part => {
+    return parts.slice(start).every(part => {
       const decoded = decodeURIComponent(part);
       return decoded !== '' && decoded !== '.' && decoded !== '..' && !/[\\/\u0000-\u001f\u007f]/.test(decoded);
     });
   } catch { return false; }
+}
+
+export function openVikingUriMatchesUser(uri, userId) {
+  return validOpenVikingUri(uri) && (uri.startsWith('viking://resources/') || uri.split('/')[3] === userId);
 }
 
 // An optional integration must never prevent the independent Docmost connection.
@@ -40,10 +47,14 @@ export function loadOpenVikingConfig(env = process.env) {
   const userId = env.DOCMOST_OPENVIKING_USER?.trim() || undefined;
   if ((accountId && !validOpenVikingIdentifier(accountId)) || (userId && !validOpenVikingIdentifier(userId)))
     return fail('Expected OpenViking account and user must be safe identifiers.');
-  const rootUri = env.DOCMOST_OPENVIKING_ROOT_URI?.trim().replace(/\/$/, '') || undefined;
+  const scope = env.DOCMOST_OPENVIKING_SCOPE?.trim() || 'personal';
+  if (!['personal', 'shared'].includes(scope)) return fail('DOCMOST_OPENVIKING_SCOPE must be personal or shared.');
+  const rootUri = env.DOCMOST_OPENVIKING_ROOT_URI?.trim().replace(/\/$/, '') || (scope === 'shared' ? 'viking://resources/docmost-mcp' : undefined);
   if (rootUri && !validOpenVikingUri(rootUri))
-    return fail('OpenViking mirror root must be a concrete directory inside a private user resources namespace.');
-  if (rootUri && userId && rootUri.split('/')[3] !== userId)
+    return fail('OpenViking mirror root must be a concrete resources directory.');
+  if (rootUri && rootUri.startsWith('viking://resources/') !== (scope === 'shared'))
+    return fail('OpenViking root must match the explicitly selected personal or shared scope.');
+  if (rootUri && userId && !openVikingUriMatchesUser(rootUri, userId))
     return fail('OpenViking mirror root must belong to the expected user.');
-  return { origin: base.origin, apiBase: `${base.origin}/api/v1/`, timeoutMs, apiKeyFile: resolve(apiKeyFile), accountId, userId, rootUri };
+  return { origin: base.origin, apiBase: `${base.origin}/api/v1/`, timeoutMs, apiKeyFile: resolve(apiKeyFile), accountId, userId, rootUri, scope };
 }

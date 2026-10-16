@@ -8,7 +8,7 @@ import { loadSession, loginSession, saveSession, removeSession, logoutSession } 
 import { checkConnection, createDocmostServer, listAccessibleSpaces } from './server.mjs';
 import { createMarkdownSync } from './sync.mjs';
 import { loadKnowledgeConfig } from './knowledge-config.mjs';
-import { checkKnowledgeConnection } from './knowledge.mjs';
+import { checkKnowledgeConnection, knowledgeSelection } from './knowledge.mjs';
 
 async function login(config) {
   try {
@@ -50,7 +50,8 @@ async function logout(config) {
 try {
   const args = process.argv.slice(2);
   if (args.length === 1 && args[0] === '--help') {
-    process.stdout.write('Docmost local MCP (stdio)\nRequired: DOCMOST_URL, DOCMOST_DEFAULT_SPACE_ID and an explicit credential source.\nCommunity: DOCMOST_AUTH_MODE=session and DOCMOST_SESSION_FILE (private absolute path).\nAPI Key: DOCMOST_AUTH_MODE=api_key (compatibility default) and DOCMOST_API_TOKEN or DOCMOST_API_TOKEN_FILE.\nOptional: DOCMOST_DEFAULT_PARENT_PAGE_ID, DOCMOST_READ_ONLY=1, DOCMOST_TIMEOUT_MS, DOCMOST_ALLOW_LOCAL_HTTP=1 (loopback only)\nOptional Markdown sync: DOCMOST_SYNC_ROOT and DOCMOST_SYNC_STATE_DIR (separate absolute directories). Only explicitly bound .md files sync while stdio is running. Requires compatible conditional sync endpoints; no uploads in read-only mode.\n--login performs personal email/password login in your own local terminal; no password is stored.\n--logout revokes only the dedicated personal session and removes its local file.\n--list-spaces [--cursor value] discovers accessible space UUIDs before configuring a default.\nLogin/logout/space discovery do not require a default space.\nOptional knowledge base: DOCMOST_KNOWLEDGE_PROVIDER=none|openviking; omitted provider preserves a configured legacy OpenViking URL.\n--check-knowledge validates only the selected knowledge-base connection and private namespace; no Docmost login or default space is needed.\n--check validates identity, default space and optional parent; without flags starts stdio.\n');
+    process.stdout.write('Page knowledge sync: DOCMOST_KNOWLEDGE_STATE_DIR (private absolute directory; defaults to DOCMOST_SYNC_STATE_DIR).\nsync_page_to_knowledge enrolls a saved Docmost page; get_page_knowledge_status reports its full-original URI and processing state. No local MD root or conditional endpoint is required for page enrollment.\n');
+    process.stdout.write('Docmost local MCP (stdio)\nRequired: DOCMOST_URL, DOCMOST_DEFAULT_SPACE_ID and an explicit credential source.\nCommunity: DOCMOST_AUTH_MODE=session and DOCMOST_SESSION_FILE (private absolute path).\nAPI Key: DOCMOST_AUTH_MODE=api_key (compatibility default) and DOCMOST_API_TOKEN or DOCMOST_API_TOKEN_FILE.\nOptional: DOCMOST_DEFAULT_PARENT_PAGE_ID, DOCMOST_READ_ONLY=1, DOCMOST_TIMEOUT_MS, DOCMOST_ALLOW_LOCAL_HTTP=1 (loopback only)\nOptional Markdown sync: DOCMOST_SYNC_ROOT and DOCMOST_SYNC_STATE_DIR (separate absolute directories). Only explicitly bound .md files sync while stdio is running. Requires compatible conditional sync endpoints; no uploads in read-only mode.\n--login performs personal email/password login in your own local terminal; no password is stored.\n--logout revokes only the dedicated personal session and removes its local file.\n--list-spaces [--cursor value] discovers accessible space UUIDs before configuring a default.\nLogin/logout/space discovery do not require a default space.\nOpenViking scope: DOCMOST_OPENVIKING_SCOPE=personal (default) or shared; DOCMOST_OPENVIKING_ROOT_URI overrides the matching concrete resource root. Shared roots inherit OpenViking ACL, not Docmost ACL.\nOptional knowledge base: DOCMOST_KNOWLEDGE_PROVIDER=none|openviking; omitted provider preserves a configured legacy OpenViking URL.\n--check-knowledge validates only the selected knowledge-base connection and selected resource namespace; no Docmost login or default space is needed.\n--check validates identity, default space and optional parent; without flags starts stdio.\n');
   } else if (args.length === 1 && args[0] === '--check-knowledge') {
     const report = await checkKnowledgeConnection(loadKnowledgeConfig(process.env));
     process.stdout.write(`${JSON.stringify(report)}\n`);
@@ -76,7 +77,8 @@ try {
     } else if (discovery) {
       process.stdout.write(`${JSON.stringify(await listAccessibleSpaces(config, cursor))}\n`);
     } else {
-      const syncManager = config.syncRoot ? await createMarkdownSync(config, { api: createApiClient(config) }) : undefined;
+      const syncManager = config.syncRoot || (config.syncStateDir && knowledgeSelection(config))
+        ? createMarkdownSync(config, { api: createApiClient(config) }) : undefined;
       const transport = new StdioServerTransport();
       const handle = serveStdio(() => createDocmostServer(config, { syncManager }), {
         transport,
@@ -96,7 +98,7 @@ try {
       transport.onclose = () => { onclose?.(); shutdown(); };
       process.once('SIGTERM', shutdown);
       process.once('SIGINT', shutdown);
-      void syncManager?.start().catch(() => process.stderr.write('SYNC_STARTUP_FAILED: Markdown sync is paused; inspect get_markdown_sync_status.\n'));
+      void syncManager?.start().catch(() => process.stderr.write('SYNC_STARTUP_FAILED: Inspect the configured Markdown or page knowledge sync status.\n'));
     }
   }
 } catch (error) {

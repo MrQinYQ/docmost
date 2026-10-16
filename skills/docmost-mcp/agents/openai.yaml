@@ -1,4 +1,4 @@
 interface:
   display_name: "Docmost MCP"
-  short_description: "安装 Docmost MCP，维护授权内容并配置 MD 保存自动同步"
-  default_prompt: "使用 $docmost-mcp 帮我安装配置 Docmost MCP，维护我授权的内容，或将选定的 MD 关联到页面并配置随 MCP 启停的保存自动同步。"
+  short_description: "安装 Docmost MCP，维护授权页面并配置已有页入库或 MD 自动同步"
+  default_prompt: "使用 $docmost-mcp 帮我安装配置 Docmost MCP，维护授权内容，将选定的已有页面入库并跟进后续修改，或配置本地 MD 保存自动同步。"

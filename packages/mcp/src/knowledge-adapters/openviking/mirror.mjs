@@ -1,12 +1,13 @@
 import { digest } from '../../sync-files.mjs';
 import { resolveMirrorLayout } from './mirror-layout.mjs';
 import { ApiError } from '../../errors.mjs';
-import { validOpenVikingIdentifier, validOpenVikingUri } from '../../openviking-config.mjs';
+import { validOpenVikingIdentifier, validOpenVikingUri, openVikingUriMatchesUser } from '../../openviking-config.mjs';
+import { readPageSource } from '../../page-source.mjs';
 
 const hash = x => typeof x === 'string' && /^[0-9a-f]{64}$/.test(x);
-const fields = ['provider', 'version', 'connectionOrigin', 'target', 'state', 'uri', 'hash', 'revision', 'pending', 'next', 'errorCode', 'retryAt', 'operation'];
+const fields = ['provider', 'version', 'connectionOrigin', 'target', 'state', 'uri', 'hash', 'revision', 'pending', 'next', 'errorCode', 'retryAt', 'operation', 'ancestorsReady', 'nodes', 'destination'];
 const phases = ['await_docmost', 'ready', 'writing', 'submit', 'submit_submitting', 'indexing', 'cleanup', 'removing', 'prune_submit', 'prune_submitting', 'pruning', 'prune_cleanup', 'prune_removing', 'prune_verify'];
-const jobFields = ['kind', 'hash', 'revision', 'phase', 'uri', 'oldUri', 'pruneUri', 'taskId', 'priorTaskIds', 'purpose', 'allowSpaceChange', 'waitFor'];
+const jobFields = ['kind', 'hash', 'revision', 'phase', 'uri', 'oldUri', 'pruneUri', 'taskId', 'priorTaskIds', 'purpose', 'allowSpaceChange', 'waitFor', 'indexUris', 'indexCursor', 'layoutVersion'];
 const states = ['waiting_docmost', 'pending', 'processing', 'retrying', 'blocked', 'synced', 'deleted'];
 const taskId = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value);
 const uuid = value => typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
@@ -17,9 +18,27 @@ const activeTask = task => ['pending', 'running', 'queued', 'cancelling'].includ
 const derivedFiles = new Set(['.abstract.md', '.overview.md', '.meta.json', '.relations.json', '.relations.jsonl']);
 const fail = code => new ApiError(code, 'OpenViking mirror is paused or awaiting confirmation. Inspect its separate sync state; do not repeat Docmost writes.');
 const safeCode = error => /^OV_[A-Z_]+$/.test(error?.code ?? '') ? error.code : 'OV_REQUEST_FAILED';
-const privateUri = value => typeof value === 'string' && /^viking:\/\/user\/[^/]+\/resources\/.+/.test(value)
-  && !/[\x00-\x1f\x7f?#\\]/.test(value) && !value.split('/').some(x => x === '.' || x === '..');
+const privateUri = validOpenVikingUri;
 function ownUri(mirror, value) { return privateUri(value) && mirror.target && value.startsWith(`${mirror.target.rootUri}/`); }
+const parentUri = value => value.slice(0, value.lastIndexOf('/'));
+const sameTarget = (a, b) => a && b && ['origin', 'accountId', 'userId', 'rootUri'].every(key => a[key] === b[key]);
+function validIndexChain(mirror, job) {
+  if (job.indexUris === undefined && job.indexCursor === undefined) return true;
+  if (job.kind !== 'body' || !ownUri(mirror, job.uri) || !job.uri.endsWith('/document.md')
+    || !Array.isArray(job.indexUris) || job.indexUris.length < 2 || job.indexUris.length > 102
+    || !Number.isInteger(job.indexCursor) || job.indexCursor < 0 || job.indexCursor >= job.indexUris.length) return false;
+  const parts = parentUri(job.uri).slice(mirror.target.rootUri.length + 1).split('/');
+  if (job.layoutVersion === 2) {
+    if (parts.length < 2 || job.indexUris.length !== parts.length) return false;
+  } else if (parts.length < 4 || !/^[0-9a-f]{16}$/.test(parts[0]) || !uuid(parts[1])
+    || !uuid(parts[2].slice(-36)) || job.indexUris.length !== parts.length - 2) return false;
+  let current = parentUri(job.uri);
+  for (const uri of job.indexUris) {
+    if (!ownUri(mirror, uri) || uri !== current) return false;
+    current = parentUri(current);
+  }
+  return job.indexUris.at(-1) === `${mirror.target.rootUri}/${parts.slice(0, job.layoutVersion === 2 ? 1 : 3).join('/')}`;
+}
 export function validateMirror(value) {
   if (value === undefined) return;
   if (!value || typeof value !== 'object' || Array.isArray(value) || value.version !== 1
@@ -31,7 +50,17 @@ export function validateMirror(value) {
     || (value.retryAt !== undefined && (!Number.isSafeInteger(value.retryAt) || value.retryAt < 0))) throw fail('OV_INVALID_STATE');
   if (value.target !== undefined && (!record(value.target) || Object.keys(value.target).sort().join(',') !== 'accountId,origin,rootUri,userId'
     || !['origin', 'accountId', 'userId'].every(k => typeof value.target[k] === 'string' && value.target[k]) || !privateUri(value.target.rootUri))) throw fail('OV_INVALID_STATE');
+  if (value.destination !== undefined && (!record(value.destination) || Object.keys(value.destination).sort().join(',') !== 'rootUri,scope'
+    || !['personal', 'shared'].includes(value.destination.scope)
+    || (value.destination.rootUri !== null && (!validOpenVikingUri(value.destination.rootUri)
+      || value.destination.rootUri.startsWith('viking://resources/') !== (value.destination.scope === 'shared'))))) throw fail('OV_INVALID_STATE');
+  if (value.nodes !== undefined && (!Array.isArray(value.nodes) || value.nodes.length < 2 || value.nodes.length > 102
+    || value.nodes.some((node, i) => !record(node) || Object.keys(node).sort().join(',') !== 'key,uri'
+      || !hash(node.key) || !ownUri(value, node.uri)
+      || parentUri(node.uri) !== (i ? value.nodes[i - 1].uri : value.target.rootUri)))) throw fail('OV_INVALID_STATE');
   if (value.uri !== undefined && !ownUri(value, value.uri)) throw fail('OV_INVALID_STATE');
+  if (value.ancestorsReady !== undefined && (value.ancestorsReady !== true || !ownUri(value, value.uri)
+    || !hash(value.hash) || !hash(value.revision))) throw fail('OV_INVALID_STATE');
   if (value.operation !== undefined && (!record(value.operation)
     || Object.keys(value.operation).some(key => !['beforeDeletedAt', 'id', 'kind', 'rootId', 'waitFor'].includes(key))
     || !uuid(value.operation.id) || !uuid(value.operation.rootId) || !['delete', 'restore'].includes(value.operation.kind)
@@ -40,6 +69,7 @@ export function validateMirror(value) {
       || value.operation.beforeDeletedAt.length > 64 || !Number.isFinite(Date.parse(value.operation.beforeDeletedAt)))))) throw fail('OV_INVALID_STATE');
   for (const job of [value.pending, value.next].filter(job => job !== undefined)) {
     if (!record(job) || Object.keys(job).some(key => !jobFields.includes(key))
+      || (job.layoutVersion !== undefined && (job.layoutVersion !== 2 || job.kind !== 'body'))
       || !['body', 'delete'].includes(job.kind) || !phases.includes(job.phase)
       || (job.kind === 'body' && !hash(job.hash)) || (job.revision !== undefined && !hash(job.revision))
       || (job.kind === 'body' && job.phase !== 'await_docmost' && !hash(job.revision))
@@ -52,6 +82,7 @@ export function validateMirror(value) {
       || (job.priorTaskIds !== undefined && (!Array.isArray(job.priorTaskIds) || job.priorTaskIds.length > 200
         || job.priorTaskIds.some(id => !taskId(id)) || new Set(job.priorTaskIds).size !== job.priorTaskIds.length))
       || (job.purpose !== undefined && job.purpose !== 'layout')
+      || !validIndexChain(value, job)
       || (job.purpose === 'layout' ? job.allowSpaceChange !== true : job.allowSpaceChange !== undefined)) throw fail('OV_INVALID_STATE');
   }
 }
@@ -61,6 +92,8 @@ export function mirrorStatus(binding) {
   return { state: mirror.state, ...(mirror.uri ? { uri: mirror.uri } : {}),
     ...(mirror.revision ? { confirmedRevision: mirror.revision } : {}),
     ...(mirror.pending ? { phase: mirror.pending.phase, operation: mirror.pending.kind, taskId: mirror.pending.taskId } : {}),
+    ...(mirror.pending?.indexUris ? { indexUri: mirror.pending.indexUris[mirror.pending.indexCursor], indexStep: mirror.pending.indexCursor + 1,
+      indexTotal: mirror.pending.indexUris.length } : {}),
     ...(mirror.errorCode ? { error: { code: mirror.errorCode, message: 'OpenViking is pending or paused; Docmost results remain independent.' } } : {}) };
 }
 
@@ -72,9 +105,17 @@ export function mirrorStatus(binding) {
 export function createMirror(config, { client, post, store, persist, signal, deletionReady = () => true }) {
   const connection = config.openViking;
   const writable = () => { signal.throwIfAborted(); if (config.readOnly) throw fail('OV_READ_ONLY'); };
+  const requestedDestination = () => ({ scope: connection?.rootUri?.startsWith('viking://resources/') ? 'shared' : connection?.scope ?? 'personal', rootUri: connection?.rootUri ?? null });
   function initial(binding) {
     validateMirror(binding.mirror);
-    return binding.mirror ??= { provider: 'openviking', version: 1, connectionOrigin: connection?.origin, state: 'waiting_docmost' };
+    if (!binding.mirror) binding.mirror = { provider: 'openviking', version: 1, connectionOrigin: connection?.origin,
+      destination: requestedDestination(), state: 'waiting_docmost' };
+    // Before this field existed, unconfirmed tasks were exclusively personal.
+    // Never infer permission to share an old snapshot from today's config.
+    binding.mirror.destination ??= binding.mirror.target
+      ? { scope: binding.mirror.target.rootUri.startsWith('viking://resources/') ? 'shared' : 'personal', rootUri: binding.mirror.target.rootUri }
+      : { scope: 'personal', rootUri: null };
+    return binding.mirror;
   }
   async function prepare(binding, source) {
     if (!connection) return;
@@ -85,6 +126,7 @@ export function createMirror(config, { client, post, store, persist, signal, del
     const job = { kind: 'body', hash: source.hash, phase: 'await_docmost' };
     const slot = mirror.pending && mirror.pending.phase !== 'await_docmost' ? 'next' : 'pending';
     mirror[slot] = job;
+    delete mirror.ancestorsReady;
     // Snapshot garbage collection follows the caller's successful atomic save.
     // The last on-disk ledger can still reference the replaced in-memory job.
   }
@@ -113,8 +155,11 @@ export function createMirror(config, { client, post, store, persist, signal, del
     const rootUri = connection.rootUri ?? identity.rootUri ?? `viking://user/${identity.userId}/resources/docmost-mcp`;
     const next = { origin: connection.origin, accountId: identity.accountId, userId: identity.userId, rootUri };
     if (!validOpenVikingIdentifier(identity.accountId) || !validOpenVikingIdentifier(identity.userId)
-      || !validOpenVikingUri(rootUri) || !rootUri.startsWith(`viking://user/${identity.userId}/resources/`)) throw fail('OV_TARGET_CHANGED');
+      || !validOpenVikingUri(rootUri) || !openVikingUriMatchesUser(rootUri, identity.userId)) throw fail('OV_TARGET_CHANGED');
     const mirror = initial(binding);
+    const expectedRoot = mirror.destination.rootUri ?? (mirror.destination.scope === 'shared'
+      ? 'viking://resources/docmost-mcp' : `viking://user/${identity.userId}/resources/docmost-mcp`);
+    if (expectedRoot !== rootUri || mirror.destination.scope !== (rootUri.startsWith('viking://resources/') ? 'shared' : 'personal')) throw fail('OV_TARGET_CHANGED');
     if (mirror.connectionOrigin && mirror.connectionOrigin !== connection.origin) throw fail('OV_TARGET_CHANGED');
     if (mirror.target && JSON.stringify(mirror.target) !== JSON.stringify(next)) throw fail('OV_TARGET_CHANGED');
     mirror.provider = 'openviking'; mirror.target = next; mirror.connectionOrigin = connection.origin;
@@ -126,6 +171,9 @@ export function createMirror(config, { client, post, store, persist, signal, del
     if (job.kind === 'delete') {
       const page = await post('pages/info', { pageId: binding.pageId });
       if (page?.id !== binding.pageId || page?.workspaceId !== binding.workspaceId || !page.deletedAt) throw fail('OV_DOCMOST_CHANGED');
+    } else if (binding.source === 'docmost') {
+      const source = await readPageSource(binding, post, { allowSpaceChange: job.allowSpaceChange === true });
+      if (source.hash !== job.revision) throw fail('OV_DOCMOST_CHANGED');
     } else {
       const remote = await post('pages/sync-state', { pageId: binding.pageId });
       if (remote?.pageId !== binding.pageId || remote?.workspaceId !== binding.workspaceId
@@ -151,8 +199,18 @@ export function createMirror(config, { client, post, store, persist, signal, del
   }
   async function finish(binding, job) {
     const mirror = binding.mirror;
+    if (job.kind === 'body' && job.indexUris && job.indexCursor + 1 < job.indexUris.length) {
+      // A move's old leaf and its cleanup queues must settle before the new
+      // ancestors aggregate their final children. This keeps the original
+      // durable cleanup protocol intact, then resumes the bounded index chain.
+      job.indexCursor++; job.phase = 'submit';
+      delete job.oldUri; delete job.pruneUri; delete job.taskId; delete job.priorTaskIds;
+      await persist(binding); return;
+    }
     if (job.kind === 'body') { mirror.uri = job.uri; mirror.hash = job.hash; mirror.revision = job.revision; }
     else { delete mirror.uri; delete mirror.hash; delete mirror.revision; }
+    if (job.kind === 'body' && job.indexUris && job.indexCursor === job.indexUris.length - 1) mirror.ancestorsReady = true;
+    else delete mirror.ancestorsReady;
     mirror.pending = mirror.next; delete mirror.next;
     if (!mirror.pending) delete mirror.pending;
     mirror.state = mirror.pending ? 'pending' : job.kind === 'delete' ? 'deleted' : 'synced';
@@ -179,6 +237,32 @@ export function createMirror(config, { client, post, store, persist, signal, del
       }
     }
     job.taskId = submitted.taskId; job.phase = phase === 'prune' ? 'pruning' : 'indexing'; await persist(binding);
+  }
+  async function checkAncestorInputs(binding, uri) {
+    const entries = await client.list(uri, signal);
+    if (!Array.isArray(entries) || entries.some(entry => !record(entry) || typeof entry.name !== 'string'
+      || !entry.name || /[\\/\x00-\x1f\x7f]/.test(entry.name) || ['.', '..'].includes(entry.name)
+      || entry.uri !== `${uri}/${entry.name}` || typeof entry.isDir !== 'boolean')) throw fail('OV_INVALID_RESPONSE');
+    for (const entry of entries) {
+      if (entry.isDir) { if (derivedFiles.has(entry.name)) throw fail('OV_CONFLICT'); continue; }
+      if (derivedFiles.has(entry.name)) continue;
+      if (entry.name !== 'document.md') throw fail('OV_CONFLICT');
+      const owners = (await store.load()).map(item => item.value).filter(owner => owner.enabled
+        && owner.origin === binding.origin && owner.workspaceId === binding.workspaceId && owner.userId === binding.userId
+        && sameTarget(owner.mirror?.target, binding.mirror.target));
+      let confirmed;
+      for (const owner of owners) {
+        validateMirror(owner.mirror);
+        const candidates = [owner.mirror, owner.mirror.pending, owner.mirror.next].filter(candidate => candidate?.uri === entry.uri
+          && hash(candidate.hash) && hash(candidate.revision) && candidate.phase !== 'await_docmost');
+        if (!candidates.length) continue;
+        const content = await client.read(entry.uri, signal);
+        const candidate = candidates.find(value => typeof content === 'string' && digest(content) === value.hash);
+        if (!candidate) continue;
+        await docmost(owner, { kind: 'body', revision: candidate.revision }); confirmed = true; break;
+      }
+      if (!confirmed) throw fail('OV_CONFLICT');
+    }
   }
   function dispatchBody(binding, job) {
     if (binding.pending || ['conflict', 'unconfirmed'].includes(binding.state)) return false;
@@ -276,8 +360,17 @@ export function createMirror(config, { client, post, store, persist, signal, del
       // Already submitted index jobs may be observed while the source is paused.
       if (!['indexing', 'pruning'].includes(job.phase) && !checkedSuccessor) await docmost(binding, job);
       if (job.kind === 'body' && job.phase === 'ready') {
-        const layout = await resolveMirrorLayout({ rootUri: mirror.target.rootUri, origin: binding.origin, workspaceId: binding.workspaceId, pageId: binding.pageId }, post);
+        const owners = [...(store.load ? await store.load() : []), ...(store.loadMirrorHistory ? await store.loadMirrorHistory() : [])];
+        const claims = [binding, ...owners.map(item => item.value)].filter(owner => sameTarget(owner.mirror?.target, mirror.target))
+          .flatMap(owner => { validateMirror(owner.mirror); return owner.mirror.nodes ?? []; });
+        const layout = await resolveMirrorLayout({ rootUri: mirror.target.rootUri, origin: binding.origin, workspaceId: binding.workspaceId, pageId: binding.pageId,
+          claims, isOccupied: async uri => await client.list(uri, signal) !== undefined }, post);
+        mirror.nodes = layout.nodes; job.layoutVersion = 2;
         job.uri = layout.uri; job.oldUri = mirror.uri && mirror.uri !== job.uri ? mirror.uri : undefined;
+        if (binding.source === 'docmost') {
+          job.indexUris = [layout.pageDirectory]; job.indexCursor = 0;
+          for (let depth = 0; depth <= layout.parentIds.length; depth++) job.indexUris.push(parentUri(job.indexUris.at(-1)));
+        }
         job.phase = 'writing'; mirror.state = 'processing'; await persist(binding);
         const current = await client.read(job.uri, signal);
         if (current !== undefined && digest(current) !== job.hash && !(job.uri === mirror.uri && digest(current) === mirror.hash)) throw fail('OV_CONFLICT');
@@ -294,7 +387,9 @@ export function createMirror(config, { client, post, store, persist, signal, del
       }
       if (['submit', 'submit_submitting'].includes(job.phase)) {
         await checkOwnedBody(job);
-        await beginTask(binding, job, job.uri.slice(0, job.uri.lastIndexOf('/')), 'semantic_and_vectors', 'submit'); return;
+        const indexUri = job.indexUris?.[job.indexCursor] ?? parentUri(job.uri);
+        if (job.indexCursor > 0 && job.phase === 'submit') await checkAncestorInputs(binding, indexUri);
+        await beginTask(binding, job, indexUri, 'semantic_and_vectors', 'submit'); return;
       }
       if (job.phase === 'indexing' || job.phase === 'pruning') {
         const task = await client.task(job.taskId, signal);
@@ -315,6 +410,10 @@ export function createMirror(config, { client, post, store, persist, signal, del
             job = await handoffDeletion(binding, job, successor);
           } else {
             if (paused) return;
+            if (job.indexUris && !job.oldUri && job.indexCursor + 1 < job.indexUris.length) {
+              job.indexCursor++; job.phase = 'submit'; delete job.taskId; delete job.priorTaskIds;
+              await persist(binding); return;
+            }
             if (!job.oldUri) { await finish(binding, job); return; }
             job.phase = 'cleanup'; delete job.taskId; await persist(binding);
           }
@@ -429,5 +528,6 @@ export function createMirror(config, { client, post, store, persist, signal, del
     mirror.state = 'pending'; delete mirror.errorCode; delete mirror.retryAt;
     await persist(binding); await process(binding); return mirrorStatus(binding);
   }
-  return { initial, prepare, confirm, discard, canProcess, process, retry, deleteConfirmed };
+  return { initial, prepare, confirm, discard, canProcess, process, retry, deleteConfirmed,
+    needsRefresh: binding => binding.source === 'docmost' && !binding.mirror?.ancestorsReady };
 }

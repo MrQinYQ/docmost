@@ -1,6 +1,6 @@
 import { ApiError } from '../../errors.mjs';
 import { mirrorStatus, validateMirror } from './mirror.mjs';
-import { validOpenVikingIdentifier, validOpenVikingUri } from '../../openviking-config.mjs';
+import { validOpenVikingIdentifier, validOpenVikingUri, openVikingUriMatchesUser } from '../../openviking-config.mjs';
 
 const activePhases = new Set(['writing', 'submit_submitting', 'indexing', 'removing', 'prune_submitting', 'pruning', 'prune_removing', 'prune_verify']);
 const terminal = task => task && ['completed', 'failed', 'cancelled'].includes(task.status);
@@ -88,7 +88,7 @@ export function createMirrorTree({ config, client, store, persist, signal }) {
       const identity = await client.identity(effective);
       const rootUri = config.rootUri ?? identity.rootUri;
       if (!validOpenVikingIdentifier(identity.accountId) || !validOpenVikingIdentifier(identity.userId)
-        || !validOpenVikingUri(rootUri) || rootUri.split('/')[3] !== identity.userId)
+        || !validOpenVikingUri(rootUri) || !openVikingUriMatchesUser(rootUri, identity.userId))
         throw new ApiError('OV_INVALID_RESPONSE', 'OpenViking namespace ownership could not be confirmed.');
       const target = { origin: config.origin, accountId: identity.accountId, userId: identity.userId, rootUri };
       if (owner && !sameTarget(owner.target, target)) throw new ApiError('OV_TARGET_CHANGED', 'The OpenViking namespace changed while a task was retained.');

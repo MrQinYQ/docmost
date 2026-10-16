@@ -298,7 +298,7 @@ test('MD only enters OpenViking after Docmost live and persisted confirmation wi
   const synced = await eventually(() => bindingState(f, binding.bindingId), x => x.openViking?.state === 'synced');
   assert.equal(synced.state, 'synced'); assert.equal(f.docWrites, 1);
   assert.equal(f.writes.length, 1); assert.equal(f.writes[0].content, '# New\n');
-  assert.match(f.writes[0].uri, new RegExp(`Shared--${spaceId}/My-Page--${pageId}/document.md$`));
+  assert.match(f.writes[0].uri, new RegExp(`Shared/My-Page/document.md$`));
   assert.equal(synced.openViking.confirmedRevision, f.remote.revision);
 });
 test('optional offline target preserves successful Docmost result and retry never replays Docmost', async t => {
@@ -337,7 +337,7 @@ test('rename moves the confirmed source and removes only the old owned leaf', as
   await eventually(() => bindingState(f, binding.bindingId), x => x.openViking?.state === 'synced');
   const old = f.writes[0].uri; f.rename('Renamed');
   await writeFile(join(f.root, 'note.md'), '# Second\n');
-  const final = await eventually(() => bindingState(f, binding.bindingId), x => x.openViking?.state === 'synced' && x.openViking.uri?.includes('Renamed--'));
+  const final = await eventually(() => bindingState(f, binding.bindingId), x => x.openViking?.state === 'synced' && x.openViking.uri?.includes('/Renamed/'));
   assert.equal(f.resources.has(old), false); assert.equal(f.resources.get(final.openViking.uri), '# Second\n');
   assert.equal(f.directories.has(old.slice(0, old.lastIndexOf('/'))), false);
 });
@@ -379,7 +379,7 @@ test('rename while the first mirror task is running retains a confirmed layout s
   assert.equal(refreshed.targets.length, 1);
   f.client.reindex = reindex;
   for (const task of f.tasks.values()) task.status = 'completed';
-  const final = await eventually(() => bindingState(f, binding.bindingId), x => x.openViking?.state === 'synced' && x.openViking.uri?.includes('Renamed-before-initial-completion--'));
+  const final = await eventually(() => bindingState(f, binding.bindingId), x => x.openViking?.state === 'synced' && x.openViking.uri?.includes('/Renamed-before-initial-completion/'));
   assert.equal(f.resources.has(oldUri), false);
   assert.equal(f.resources.get(final.openViking.uri), '# First confirmed body\n');
   assert.equal(f.docWrites, 1);
@@ -404,7 +404,7 @@ test('metadata refresh compares the layout when its binding queue executes', asy
   assert.equal((await refreshed).targets.length, 1);
   await eventually(() => bindingState(f, binding.bindingId), x => x.openViking?.state === 'synced' && x.openViking.uri === original.openViking.uri && x.openViking.confirmedRevision === f.remote.revision);
   assert.equal(f.resources.get(original.openViking.uri), '# Confirmed second version\n');
-  assert.ok([...f.resources.keys()].every(uri => !uri.includes('Temporary-layout--')));
+  assert.ok([...f.resources.keys()].every(uri => !uri.includes('/Temporary-layout/')));
   assert.equal(f.docWrites, 2);
 });
 test('an unknown reindex submission cannot reuse the only completed task from an earlier version', async t => {

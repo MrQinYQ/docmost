@@ -47,9 +47,11 @@ test('adapter preserves physical layout and creates provider state without chang
   const runtime = adapter.createRuntime(connection, { config: { origin }, post,
     client: { async identity() { return target; } }, store: {}, persist: async () => {} });
   const record = binding();
-  assert.deepEqual(await runtime.resolveLayout(record), {
-    uri: `${rootUri}/cd82f7f07c4099e9/${workspaceId}/Product-Team--${spaceId}/Parent--${parentId}/Child--${pageId}/document.md`,
-    pageDirectory: `${rootUri}/cd82f7f07c4099e9/${workspaceId}/Product-Team--${spaceId}/Parent--${parentId}/Child--${pageId}`,
+  const { nodes, ...layout } = await runtime.resolveLayout(record);
+  assert.equal(nodes.length, 3);
+  assert.deepEqual(layout, {
+    uri: `${rootUri}/Product-Team/Parent/Child/document.md`,
+    pageDirectory: `${rootUri}/Product-Team/Parent/Child`,
     spaceId, pageId, title: 'Child', ancestors: [{ pageId: parentId, title: 'Parent' }], parentIds: [parentId],
   });
   runtime.block(record, 'configuration');
@@ -69,7 +71,7 @@ test('adapter connection check reads only identity and returns a safe owned targ
   assert.deepEqual(await adapter.checkConnection(connection, { signal: controller.signal, client }), target);
   for (const invalid of [
     { ...target, userId: 'foreign' }, { ...target, accountId: '../unsafe' },
-    { ...target, rootUri: 'viking://resources/shared' },
+    { ...target, rootUri: 'viking://resources' },
   ]) await assert.rejects(adapter.checkConnection({ origin: connection.origin }, { client: { async identity() { return invalid; } } }), { code: 'OV_INVALID_RESPONSE' });
   await assert.rejects(adapter.checkConnection({ ...connection, userId: 'foreign' }, { signal: controller.signal, client }), { code: 'OV_IDENTITY_CHANGED' });
 });
@@ -110,6 +112,7 @@ test('a legacy state gains its provider only after safe target ownership is conf
       pending: { kind: 'body', phase: 'ready', hash: revision, revision } });
     const before = structuredClone(record);
     assert.equal(runtime.mirror.initial(record).provider, undefined);
+    before.mirror.destination = { scope: 'personal', rootUri: null };
     assert.deepEqual(record, before);
     await runtime.mirror.process(record);
     if (identity === target) {

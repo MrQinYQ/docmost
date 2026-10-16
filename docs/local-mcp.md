@@ -2,11 +2,13 @@
 
 `@docmost/local-mcp` 是独立的 Node.js stdio MCP：AI 客户端启动本地进程，由它使用个人凭据请求已部署的 Docmost。社区版可明确选择邮箱/密码登录建立的**个人专用会话**；支持企业 API Key 的部署也可使用 Key 模式。无需启动本仓库的 Docmost 服务，也不会直接写数据库。`skills/docmost-mcp` 指导 Agent 安装配置和操作用户授权的页面；MCP 与 Skill 需分别安装。
 
-标准安装会主动提供“不启用知识库 / OpenViking”选择，明确保存 `DOCMOST_KNOWLEDGE_PROVIDER=none|openviking`。当前可选知识库适配层只实现 [OpenViking 镜像](openviking-sync.md)：已绑定本地 MD 在 Docmost 确认后，通过 HTTP 写入指定个人用户私有目录并生成摘要/向量。选择 `none` 跳过后端配置；无需本机安装 `ov`、Python 或额外 npm 包，也不自动部署服务。选择与兼容规则见 [知识库接入](knowledge-sync.md)。
+标准安装会主动提供“不启用知识库 / OpenViking”选择，明确保存 `DOCMOST_KNOWLEDGE_PROVIDER=none|openviking`。当前可选知识库适配层只实现 [OpenViking 镜像](openviking-sync.md)：已有 Docmost 页面可显式入库并登记后续 MCP 修改跟进，也保留本地 MD 在 Docmost 确认后入库的链路。两种入口都通过 HTTP 写入指定个人用户私有目录并生成摘要/向量。选择 `none` 跳过后端配置；无需本机安装 `ov`、Python 或额外 npm 包，也不自动部署服务。选择与兼容规则见 [知识库接入](knowledge-sync.md)。
 
 源码交付入口是 [MrQinYQ/docmost 的本指南](https://github.com/MrQinYQ/docmost/blob/main/docs/local-mcp.md)。本文使用 GitHub 源码安装，不需要发布 npm 包、`npm pack` 或在线 `npx` 包。代码、Skill 和指南应来自同一分支。**社区会话模式要求所选版本已包含 `--login` / `--logout` 和 `DOCMOST_AUTH_MODE=session`**；先核对实际文件和构建后的 `--help`。此前仅有 API Key 模式的版本不支持这些步骤；缺少新入口时说明版本问题并停止，不声称远程版本已支持，也不改装同名第三方包。
 
 需要 MD 或 OpenViking 时，同样先核对所选版本实际包含对应源码和指南，再构建并发现扩展工具；本地指南不能证明 GitHub 默认分支或用户现有安装已具备这些可选能力。
+
+选择 OpenViking 后继续引导“个人（默认）/共享”：配置 `DOCMOST_OPENVIKING_SCOPE=personal|shared`，默认根分别为 `viking://user/<用户>/resources/docmost-mcp` 与 `viking://resources/docmost-mcp`。共享使用同一 account 的目标 ACL，不自动复制 Docmost 权限；已有个人任务不得直接改投共享，应另设连接和独立私有知识库状态目录。目录规则、授权和双连接跟进范围见 [OpenViking 个人与共享目录](openviking-sync.md#个人与共享目录)。
 
 ## 可以直接交给 Agent 的安装指令
 
@@ -23,7 +25,9 @@
 
 我授权你在已选作用域安装 MCP 与 Skill：检查通过后合并客户端配置，保留现有其他设置；遇到同名 docmost 配置先比较，有冲突再让我选择。正常配置使用 DOCMOST_READ_ONLY=0，具体写入仍需我的文档任务授权。安装完成后只读验证并报告配置位置、身份、默认空间和父页，不输出凭据，也不要创建测试页面。会话过期或撤销后提示我在自己的终端重新登录，不保存密码或自动登录。退出使用 --logout，只撤销本 MCP 的专用会话并清理本地文件；远程撤销失败时如实报告不确定性。
 
-我选择“不启用知识库”时设为 none，跳过所有后端地址、Key、身份与私有根问题；即使遗留 OpenViking 配置也不读取 Key 或访问服务。我选择 OpenViking 时，按同版本 docs/knowledge-sync.md、docs/md-auto-sync.md 和 docs/openviking-sync.md 引导提供既有服务 HTTP/HTTPS 根地址、仓库外私有 Key 文件绝对路径、可选预期账户/用户及私有根，并确定允许绑定的源目录和独立私有状态目录；已有信息不要重复询问。只处理明确绑定的 MD，不导入工作区。Key 由部署管理员提供给指定个人用户，再由我在自己的真实终端隐藏输入保存到仓库外 0600 文件；你只配置路径，不读取或回显 Key，不代跑私密输入，不借用 Docmost 凭据。沿用已明确授权的该服务模型处理和父目录摘要刷新范围。无需安装 ov/Python 或新增 npm 包，不自动部署服务。构建后运行独立只读 --check-knowledge，它无需 Docmost 登录或默认空间；报告安全状态、身份与私有根，不把通过检查当成写入或索引验收。知识库失败单独报告，继续完成可用的 Docmost 接入。新建 MD 页采用空页创建→绑定→查询当前版本并条件解决写入；冲突不提前导出，知识库失败不重放 Docmost 写入，分别报告两端状态。
+我选择“不启用知识库”时设为 none，跳过所有后端地址、Key、身份与私有根问题；即使遗留 OpenViking 配置也不读取 Key 或访问服务。我选择 OpenViking 时，按同版本 docs/knowledge-sync.md 和 docs/openviking-sync.md 引导既有服务根地址、仓库外私有 Key 文件、个人/共享模式、可选预期账户/用户与所选资源根。已有页面同步只配置 DOCMOST_KNOWLEDGE_STATE_DIR 私有绝对目录（默认可复用已有 DOCMOST_SYNC_STATE_DIR），不要求本地 MD、源目录、绑定或条件同步接口。Key 由部署管理员提供给指定个人用户，再由我本人在真实终端隐藏输入保存到仓库外 0600 文件；你只配置路径，不读取/回显 Key 或代跑私密输入。沿用已明确授权的该服务模型处理和父目录摘要刷新范围，不重复询问。无需安装 ov/Python、额外 npm 包或部署服务。
+
+构建后先只读 --check-knowledge，再重启实际 MCP 连接发现工具及 schema。已有页面优先用 sync_page_to_knowledge({pageId:规范UUID}) 将当前已保存完整 Markdown 入库并登记，用 get_page_knowledge_status({pageId}) 查看 URI、原文哈希、进度和错误；失败时用状态返回的 bindingId 调用 retry_knowledge_sync，仅补知识库，不重放 Docmost。不要默认退回 ov CLI、add-resource 或要求先导出 MD。普通 create_page 不会自动开启外发；登记后本 MCP 的正文/标题修改、移动页面或祖先、跨空间移动、软删除/恢复会跟进，网页直接改动保存后须再次显式同步。只有我另选本地 MD 保存上传时，才按 docs/md-auto-sync.md 配置两个 MD 目录和绑定/条件同步流程。不导入工作区，不迁移或清理旧 CLI 导入。知识库失败单独报告，继续可用的 Docmost 接入；只读检查不能代替完整原文哈希、摘要/向量与检索验收。
 ```
 
 后面的 shell 示例适用于 macOS/Linux；其他系统应调整路径和权限。Agent 可以完成源码构建、非秘密配置和已授权的只读查询；`--login` 必须留给用户在自己的本机终端执行。
@@ -59,7 +63,7 @@ npm run --workspaces=false build
 node /absolute/path/docmost-mcp-source/packages/mcp/dist/index.mjs --help
 ```
 
-`--help` 应包含 `--login`、`--logout`、`DOCMOST_AUTH_MODE` 和 `DOCMOST_SESSION_FILE`；需要知识库功能时，还须包含 `--check-knowledge` 和 `DOCMOST_KNOWLEDGE_PROVIDER`。稀疏检出保留 MCP、Skill、指南和根文件（包括许可证）。`--workspaces=false` 将安装限定在 MCP 包，不需要根目录完整工作区的 `pnpm install`。构建入口为 `/absolute/path/docmost-mcp-source/packages/mcp/dist/index.mjs`。
+`--help` 应包含 `--login`、`--logout`、`DOCMOST_AUTH_MODE` 和 `DOCMOST_SESSION_FILE`；需要知识库功能时，还须包含 `--check-knowledge`、`DOCMOST_KNOWLEDGE_PROVIDER` 和 `DOCMOST_KNOWLEDGE_STATE_DIR`，重启后实际发现页面同步/状态工具。稀疏检出保留 MCP、Skill、指南和根文件（包括许可证）。`--workspaces=false` 将安装限定在 MCP 包，不需要根目录完整工作区的 `pnpm install`。构建入口为 `/absolute/path/docmost-mcp-source/packages/mcp/dist/index.mjs`。
 
 需要运行包内测试时，在同一 `packages/mcp` 目录执行：
 
@@ -81,7 +85,7 @@ npm install --workspaces=false
 npm run --workspaces=false build
 ```
 
-如已安装 Skill，比较并更新授权作用域中的 Skill 文件。随后重启 Docmost MCP 连接，让客户端重新发现工具；运行中的旧进程不会自动加载新代码。基础可写/只读模式为 22/10 个工具，开启 MD 同步为 26/11，同时选择 OpenViking 为 28/11（通用重试与旧兼容别名均保留）；仅在另一个目录构建不会更新客户端实际指向的安装。旧安装省略 provider 但已有 OpenViking URL 时兼容启用；显式 `none` 可覆盖遗留配置。
+如已安装 Skill，比较并更新授权作用域中的 Skill 文件。随后重启 Docmost MCP 连接，让客户端重新发现工具；运行中的旧进程不会自动加载新代码。基础、MD 和知识库扩展按当前配置发现实际工具与 schema，不依赖旧工具总数；仅在另一个目录构建不会更新客户端实际指向的安装。旧安装省略 provider 但已有 OpenViking URL 时兼容启用；显式 `none` 可覆盖遗留配置。
 
 ## 3. 用户在自己的终端建立个人会话
 
@@ -222,16 +226,18 @@ DOCMOST_KNOWLEDGE_PROVIDER = "none"
 | `DOCMOST_API_TOKEN` | 仅 API Key 模式：由安全进程环境注入，不在配置、聊天或命令中填写明文。 |
 | `DOCMOST_DEFAULT_SPACE_ID` | 正常 stdio 启动和 `--check` 必填的默认空间 UUID；`--login` / `--logout` / `--list-spaces` 无需填写。 |
 | `DOCMOST_DEFAULT_PARENT_PAGE_ID` | 可选默认父页 UUID，须属于默认空间；不设置或为空表示根目录。 |
-| `DOCMOST_READ_ONLY` | 默认 `0`；基础工具为 22/10（可写/只读），MD 为 26/11，MD 加 OpenViking 为 28/11；只读不向两端派发写入。 |
+| `DOCMOST_READ_ONLY` | 默认 `0`；只读设为 `1`，不向两端派发写入，知识库仅查询状态。 |
 | `DOCMOST_TIMEOUT_MS` | 请求超时，默认 `30000` 毫秒，范围 `100`–`120000`。 |
 | `DOCMOST_ALLOW_LOCAL_HTTP` | 仅本机调试设为 `1`，允许 loopback HTTP；远程仍需 HTTPS。 |
 | `DOCMOST_SYNC_ROOT` | 可选 MD 同步的现有绝对源目录，只访问明确绑定的文件。 |
 | `DOCMOST_SYNC_STATE_DIR` | 配合源目录的独立私有绝对目录；0700/0600，启用镜像后会暂存原始 MD 快照。 |
 | `DOCMOST_KNOWLEDGE_PROVIDER` | 新安装明确选择 `none` 或 `openviking`；`none` 覆盖遗留后端配置，不读取 Key、不访问服务。省略时兼容由已有 OpenViking URL 推断。 |
+| `DOCMOST_KNOWLEDGE_STATE_DIR` | 页面主动同步的私有绝对状态目录，保存登记、任务与完整原文快照；省略时复用已有 `DOCMOST_SYNC_STATE_DIR`，不要求 MD 源目录；同时启用 MD 时须与 MD 状态目录相同。 |
 | `DOCMOST_OPENVIKING_URL` | OpenViking 部署根 URL；HTTPS 或本机 loopback HTTP。明确选择 OpenViking 时必需，缺失仅阻塞知识库。 |
 | `DOCMOST_OPENVIKING_API_KEY_FILE` | 选择 OpenViking 时必需的独立私有 Key 文件绝对路径。 |
 | `DOCMOST_OPENVIKING_ACCOUNT` / `DOCMOST_OPENVIKING_USER` | 可选预期身份校验，不能切换 Key 所属用户。 |
-| `DOCMOST_OPENVIKING_ROOT_URI` | 可选该用户私有资源根，默认 `viking://user/<已确认用户>/resources/docmost-mcp`。 |
+| `DOCMOST_OPENVIKING_SCOPE` | `personal`（默认）或显式 `shared`，后者写同一 account 的共享 resources。 |
+| `DOCMOST_OPENVIKING_ROOT_URI` | 所选模式的具体子目录，默认个人为 `viking://user/<已确认用户>/resources/docmost-mcp`，共享为 `viking://resources/docmost-mcp`。 |
 | `DOCMOST_OPENVIKING_TIMEOUT_MS` | OpenViking 单次 HTTP 超时，默认 `30000` 毫秒，范围 `100`–`120000`。 |
 
 认证模式严格互斥：`session` 拒绝 `DOCMOST_API_TOKEN` / `DOCMOST_API_TOKEN_FILE`，`api_key` 拒绝 `DOCMOST_SESSION_FILE`；不会隐式切换。`DOCMOST_PASSWORD` 等密码环境变量不受支持。
@@ -244,13 +250,13 @@ DOCMOST_KNOWLEDGE_PROVIDER = "none"
 
 ### 可选 MD 与知识库
 
-两个 MD 目录必须同时配置且不能互相包含，目标服务器还须具备条件同步路由；详见 [Markdown 自动同步](md-auto-sync.md)。增加 OpenViking 时由用户从该部署取得个人 Key，按 [私密保存与连接步骤](openviking-sync.md#用户在自己的终端保存-key) 写入仓库外文件；OpenViking Key 不能代替 Docmost Token，也不受 Docmost 企业 API Key 许可决定。
+已有 Docmost 页面用 `sync_page_to_knowledge` 入库，只需知识库连接及 `DOCMOST_KNOWLEDGE_STATE_DIR` 私有绝对目录（默认复用已有 `DOCMOST_SYNC_STATE_DIR`），不需要 MD 源文件、绑定或条件同步路由。仅在选择本地 MD 保存自动上传时，两个 MD 目录才须同时配置且不能互相包含，目标部署还须具备条件同步路由；详见 [Markdown 自动同步](md-auto-sync.md)。增加 OpenViking 时由用户从该部署取得个人 Key，按 [私密保存与连接步骤](openviking-sync.md#用户在自己的终端保存-key) 写入仓库外文件；OpenViking Key 不能代替 Docmost Token，也不受 Docmost 企业 API Key 许可决定。
 
 上述客户端示例对应选择 `none`；选择 OpenViking 时将 provider 改为 `openviking` 并合并其连接变量。远程使用部署根 HTTPS URL；本机 HTTP 仅允许 loopback。MCP 通过 HTTP 请求既有服务，不检查 `ov` 命令，也不自动部署服务。显式 `none` 覆盖遗留配置；省略 provider 时才按已有 URL 兼容推断。明确选择 OpenViking 但缺少 URL、未知 provider 或连接失败只影响知识库状态，不阻止普通 Docmost 工具。
 
 配置后运行独立只读 `node /absolute/path/docmost-mcp-source/packages/mcp/dist/index.mjs --check-knowledge`，带入所选后端变量即可，无需 Docmost 登录、默认空间或 MD 目录。检查返回安全状态、鉴权身份和私有根，不输出 Key；它不写入资源，也不证明摘要或索引能力。失败仅使此检查返回非零，单独报告后继续可用的 Docmost 配置。示例与边界见 [知识库接入](knowledge-sync.md)。
 
-`get_markdown_sync_status` 的 `knowledgeBase` 报告 provider、启用状态与每页进度，兼容保留 `openViking`。`retry_knowledge_sync` 与 OpenViking 的兼容别名 `retry_openviking_sync` 只补已确认的知识库阶段，不重放 Docmost 写入。开启前沿用或取得已绑定正文及祖先目录摘要刷新的明确授权；切换 provider、地址、身份或根不会改投旧持久化任务。
+已有页面调用 `sync_page_to_knowledge({pageId})` 读取当前已保存完整 Markdown 并登记后续 MCP 修改跟进，用 `get_page_knowledge_status({pageId?})` 读登记、URI、`localHash` / `remoteRevision` 正文 SHA-256 指纹和独立 `knowledgeBase` 错误；未登记为 `not_enrolled`，数据库保存尚未导出确认为 `waiting_docmost`。这些指纹不是实时协作版本或 CAS 令牌。普通新建页须显式登记才外发；网页直接修改无后台监听，再显式同步即可。MD 绑定仍通过 `get_markdown_sync_status.knowledgeBase` 查看进度，兼容保留 `openViking`。通用重试 `retry_knowledge_sync({bindingId})` 及 OpenViking 兼容别名仅补知识库阶段，不重放 Docmost 写入。开启前沿用或取得完整正文及祖先目录摘要刷新的明确授权；切换 provider、地址、身份或根不改投旧任务，不迁移/清理旧 CLI 导入。
 
 ## 6. 安装 Skill 并验证连接
 
@@ -283,11 +289,13 @@ cp -R /absolute/path/docmost-mcp-source/skills/docmost-mcp .agents/skills/docmos
 
 可选的本地 MD 保存自动同步见 [Markdown 自动同步](md-auto-sync.md)：随 MCP 进程启停、显式关联、条件更新和冲突暂停。默认不启用；需要配置源目录与私有状态目录，以及包含条件同步接口的服务器。
 
-同时选择 OpenViking 时，只为这些绑定页增加 [可选镜像](openviking-sync.md)。空间名、父页标题和规范 UUID 构成嵌套路径，确认后的 MD 快照用于摘要与向量；网页正文冲突不自动导出。`retry_knowledge_sync({bindingId})` 与兼容别名 `retry_openviking_sync` 不提供任意路径写入能力。明确的删除/恢复只处理可证明属于本次操作且发生状态转换的活跃登记子集；删除本地 MD 不传播到远端。
+选择 OpenViking 后，已有 Docmost 页面可显式调用 `sync_page_to_knowledge` 入库并登记，独立于 MD 绑定；MD 链路也可增加 [可选镜像](openviking-sync.md)。空间名、完整父页链和页面标题构成可读路径，规范 ID 保留在私有账本，完整 Markdown 原文用于摘要与向量；已登记页的 MCP 修改及移动祖先会跟进，网页保存后再次显式同步。`retry_knowledge_sync({bindingId})` 与兼容别名 `retry_openviking_sync` 不提供任意路径写入能力。明确的删除/恢复只处理可证明属于本次操作且发生状态转换的活跃登记子集；删除本地 MD 不传播到远端。
 
 本地包对齐 [Docmost 官方 MCP 指南](https://docmost.com/docs/user-guide/mcp) 公开列出的 20 个工具能力，另保留 `delete_page` / `restore_page` 两个本地扩展，共 22 个工具。官方指南公布工具名称和用途，未公布输入 schema；本地输入依据本仓库实际 REST DTO 和权限检查实现，不声称与私有企业 MCP 实现完全一致。官方远程 `/mcp` 的许可与 OAuth 接入要求仍按官方指南执行；本地 stdio 的个人会话方式见前文。
 
 客户端可能给工具名称加前缀，应发现当前连接实际提供的工具，并以其 schema 为准；不能把旧版十工具清单当作固定接口。注册工具不代表目标部署的每个后端接口都可用。
+
+可选知识库工具另行发现：`sync_page_to_knowledge({pageId: 规范UUID})` 主动读取并登记完整原文，`get_page_knowledge_status({pageId?})` 查询状态/URI/指纹，`retry_knowledge_sync({bindingId})` 仅补知识库阶段。`none` 或缺少私有状态目录时页面工具不注册；只读模式仅注册状态读取。各工具返回、错误和重试流程见 [知识库接入](knowledge-sync.md#状态与错误的处理)，不默认退回 CLI。
 
 | 工具 | 读写 | 来源 | 用途 |
 | --- | --- | --- | --- |
@@ -357,9 +365,11 @@ cp -R /absolute/path/docmost-mcp-source/skills/docmost-mcp .agents/skills/docmos
 | 404、TLS 或超时错误 | 核对根 URL（不加 `/api`）、版本、网络和证书；保留 HTTPS 证书校验。 |
 | `search_attachments` 返回 `UNSUPPORTED_DEPLOYMENT` | 目标服务器缺少附件搜索接口；本地 MCP 安装不会更新服务器。由管理员合法部署支持 `/api/search-attachments` 的版本，不当作空结果。 |
 | Node 无法启动或缺写工具 | 核对 Node 22+ 绝对路径和 `dist/index.mjs`；需要写工具时检查 `DOCMOST_READ_ONLY`。 |
-| 知识库工具未出现 | 核对源码/构建版本、客户端入口、MD 两个目录和 provider 选择，再重启连接；`none` 和只读模式没有重试写工具。 |
+| 知识库工具未出现 | 核对源码/构建版本、实际入口、provider、私有知识库状态目录及只读配置，再重启连接；已有页不要求 MD 两个目录。 |
 | `--check-knowledge` 失败 | 单独排查所选 provider、服务根地址、私有 Key 文件权限、鉴权身份与根；无需先配置 Docmost 默认空间，不影响普通 Docmost 工具。 |
-| Docmost 已成功、知识库 `retrying` / `blocked` | 查看该关联 `knowledgeBase`（兼容字段 `openViking`）；网络失败保留队列，身份/配置/冲突错误先排查。不要重复执行 Docmost 创建或正文写入。 |
+| Docmost 已成功、知识库 `retrying` / `blocked` | 页面登记看 `get_page_knowledge_status`，MD 关联看 `knowledgeBase`（兼容 `openViking`）；保留 bindingId，先排查再通用重试，不重复 Docmost 创建或正文写入。 |
+| 页面未登记或主动同步失败 | 状态查询不自动登记；按工具实际错误区分未配置、页面身份/权限、目标变化及后端处理失败，见 [知识库状态与错误](knowledge-sync.md#状态与错误的处理)。 |
+| 再次更新同页正文返回 `SAVE_PENDING` | 上一笔正文保存未确认，本次 Docmost 更新尚未派发；等待并读回后再执行这次请求，不重复已成功的上一笔。 |
 
 正常 stdio 启动后进程等待 MCP 协议输入；登录交互只属于单独的 `--login` 命令。不要向 stdout 添加调试输出；诊断写 stderr，避免凭据和完整请求头。
 

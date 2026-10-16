@@ -37,6 +37,7 @@ run('explicit OpenViking and legacy URL inference preserve the established conne
   const expected = {
     provider: 'openviking',
     config: {
+      scope: 'personal',
       origin: 'https://knowledge.example.invalid',
       apiBase: 'https://knowledge.example.invalid/api/v1/',
       timeoutMs: 30000,

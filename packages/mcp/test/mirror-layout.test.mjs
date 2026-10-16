@@ -11,7 +11,7 @@ const grandparentId = '00000000-0000-4000-8000-000000000005';
 const otherId = '00000000-0000-4000-8000-000000000006';
 const rootUri = 'viking://user/fixture-user/resources/docmost-mcp';
 const origin = 'https://wiki.example.test';
-const prefix = `${rootUri}/cd82f7f07c4099e9/${workspaceId}`;
+const prefix = rootUri;
 const options = { rootUri, origin, workspaceId, pageId };
 
 function page(id = pageId, title = 'Note', parentPageId = null, extra = {}) {
@@ -42,29 +42,27 @@ function fixture(pages = [page()], space = { id: spaceId, name: 'Product Team', 
 test('layout preserves Docmost space, hierarchy and canonical page identity', async () => {
   const f = fixture([page(pageId, 'Same title', parentId), page(parentId, 'Same title', grandparentId), page(grandparentId, 'Overview')]);
   const layout = await resolveMirrorLayout(options, f.post);
-  const directory = `${prefix}/Product-Team--${spaceId}/Overview--${grandparentId}/Same-title--${parentId}/Same-title--${pageId}`;
-  assert.deepEqual(layout, { uri: `${directory}/document.md`, pageDirectory: directory,
+  const directory = `${prefix}/Product-Team/Overview/Same-title/Same-title`;
+  const { nodes, ...metadata } = layout;
+  assert.equal(nodes.length, 4);
+  assert.deepEqual(metadata, { uri: `${directory}/document.md`, pageDirectory: directory,
     spaceId, pageId, parentIds: [grandparentId, parentId], title: 'Same title',
     ancestors: [{ pageId: grandparentId, title: 'Overview' }, { pageId: parentId, title: 'Same title' }] });
   assert.deepEqual(f.calls.filter(call => call.path === 'pages/info').map(call => call.body.pageId), [pageId, parentId, grandparentId]);
 });
 
-test('same-title pages and spaces never share UUID-suffixed resource directories', async () => {
+test('same-title siblings and spaces resolve collisions using durable identity claims', async () => {
   const one = await resolveMirrorLayout(options, fixture().post);
-  const two = await resolveMirrorLayout({ ...options, pageId: otherId }, fixture([page(otherId)]).post);
+  const two = await resolveMirrorLayout({ ...options, pageId: otherId, claims: one.nodes }, fixture([page(otherId)]).post);
   assert.notEqual(one.pageDirectory, two.pageDirectory);
-  assert.match(one.pageDirectory, new RegExp(`Note--${pageId}$`));
-  assert.match(two.pageDirectory, new RegExp(`Note--${otherId}$`));
-  const alternate = fixture([page(pageId, 'Note', null, { spaceId: otherId })], { id: otherId, name: 'Product Team', workspaceId });
-  alternate.post = async (path, body) => path === 'pages/info' ? alternate.records.get(body.pageId) : alternate.space;
-  const three = await resolveMirrorLayout(options, alternate.post);
-  assert.match(three.pageDirectory, new RegExp(`Product-Team--${otherId}/`));
+  assert.match(one.pageDirectory, /Note$/);
+  assert.match(two.pageDirectory, /Note--[a-f0-9]{8}$/);
 });
 
 test('Unicode NFC remains readable and unsafe separators cannot inject URI paths', async () => {
   const f = fixture([page(pageId, '../../Cafe\u0301/规格\\文档%2F#?秘密')], { id: spaceId, name: '研发/../资料', workspaceId });
   const layout = await resolveMirrorLayout(options, f.post);
-  assert.equal(layout.uri, `${prefix}/研发-资料--${spaceId}/Café-规格-文档-2F-秘密--${pageId}/document.md`);
+  assert.equal(layout.uri, `${prefix}/研发-资料/Café-规格-文档-2F-秘密/document.md`);
   assert.equal(layout.title, '../../Café/规格\\文档%2F#?秘密');
   assert.ok(!layout.uri.includes('%'));
   assert.ok(!layout.uri.includes('?'));
@@ -76,17 +74,17 @@ test('Unicode NFC remains readable and unsafe separators cannot inject URI paths
 test('UTF-8 title segments stay bounded without broken Unicode', async () => {
   const layout = await resolveMirrorLayout(options, fixture([page(pageId, '界😀'.repeat(500))]).post);
   const segment = layout.pageDirectory.split('/').at(-1);
-  const humanName = segment.slice(0, -(pageId.length + 2));
+  const humanName = segment;
   assert.ok(Buffer.byteLength(humanName, 'utf8') <= 120);
   assert.ok(humanName.startsWith('界😀'));
   assert.equal(humanName.includes('\ufffd'), false);
-  assert.equal(segment.endsWith(`--${pageId}`), true);
+  assert.ok(!segment.includes('--'));
 });
 
 test('empty titles and entirely unsafe names have a safe fallback', async () => {
   for (const title of [null, '', '   ', '../%#?\\']) {
     const layout = await resolveMirrorLayout(options, fixture([page(pageId, title)], { id: spaceId, name: '\u0000/#?', workspaceId }).post);
-    assert.equal(layout.uri, `${prefix}/Untitled--${spaceId}/Untitled--${pageId}/document.md`);
+    assert.equal(layout.uri, `${prefix}/Untitled/Untitled/document.md`);
   }
 });
 
@@ -95,19 +93,19 @@ test('canonical UUID casing and equivalent origin roots have stable layout', asy
   const canonicalId = uppercaseId.toLowerCase();
   const f = fixture([page(uppercaseId)]);
   const layout = await resolveMirrorLayout({ ...options, rootUri: `${rootUri}/`, origin: 'https://WIKI.example.test:443/', pageId: uppercaseId }, f.post);
-  assert.equal(layout.uri, `${prefix}/Product-Team--${spaceId}/Note--${canonicalId}/document.md`);
+  assert.equal(layout.uri, `${prefix}/Product-Team/Note/document.md`);
   assert.equal(layout.pageId, canonicalId);
   assert.equal(f.calls[0].body.pageId, canonicalId);
 });
 
 test('deployment and workspace namespaces isolate identical page and space UUIDs', async () => {
   const original = await resolveMirrorLayout(options, fixture().post);
-  const otherDeployment = await resolveMirrorLayout({ ...options, origin: 'https://other.example.test' }, fixture().post);
+  const otherDeployment = await resolveMirrorLayout({ ...options, origin: 'https://other.example.test', claims: original.nodes }, fixture().post);
   assert.notEqual(otherDeployment.pageDirectory, original.pageDirectory);
   const otherWorkspace = fixture([page(pageId, 'Note', null, { workspaceId: otherId })],
     { id: spaceId, name: 'Product Team', workspaceId: otherId });
-  const isolated = await resolveMirrorLayout({ ...options, workspaceId: otherId }, otherWorkspace.post);
-  assert.equal(isolated.pageDirectory, `${rootUri}/cd82f7f07c4099e9/${otherId}/Product-Team--${spaceId}/Note--${pageId}`);
+  const isolated = await resolveMirrorLayout({ ...options, workspaceId: otherId, claims: original.nodes }, otherWorkspace.post);
+  assert.match(isolated.pageDirectory, /Product-Team--[a-f0-9]{8}\/Note$/);
   assert.notEqual(isolated.pageDirectory, original.pageDirectory);
 });
 
@@ -120,7 +118,7 @@ test('rename and move are discovered freshly while page identity stays stable', 
   const after = await resolveMirrorLayout(options, f.post);
   assert.equal(after.pageId, before.pageId);
   assert.deepEqual(after.parentIds, []);
-  assert.equal(after.uri, `${prefix}/Renamed-space--${spaceId}/After--${pageId}/document.md`);
+  assert.equal(after.uri, `${prefix}/Renamed-space/After/document.md`);
   assert.notEqual(after.uri, before.uri);
 });
 
@@ -198,7 +196,7 @@ test('malformed canonical metadata cannot silently flatten hierarchy', async () 
 test('unsafe roots, origins and noncanonical request IDs are rejected before reads', async () => {
   assert.equal(typeof resolveMirrorLayout, 'function', 'resolveMirrorLayout must be implemented');
   const invalid = [
-    ...['viking://resources/shared', `${rootUri}/../escape`, `${rootUri}/%2e%2e`, `${rootUri}/evil?x=1`, `${rootUri}/evil#x`, `${rootUri}/evil\\path`, `${rootUri}//empty`, 'viking://user/fixture-user/resources', 'viking://user/../resources/root'].map(rootUri => ({ rootUri })),
+    ...['viking://resources', `${rootUri}/../escape`, `${rootUri}/%2e%2e`, `${rootUri}/evil?x=1`, `${rootUri}/evil#x`, `${rootUri}/evil\\path`, `${rootUri}//empty`, 'viking://user/fixture-user/resources', 'viking://user/../resources/root'].map(rootUri => ({ rootUri })),
     ...['https://wiki.example.test/path', 'https://user:secret@wiki.example.test', 'https://wiki.example.test/?key=secret', 'file:///tmp/wiki'].map(origin => ({ origin })),
     { pageId: 'slug' }, { workspaceId: 'workspace' }, { allowDeleted: 'true' },
   ];

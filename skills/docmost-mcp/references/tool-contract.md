@@ -2,7 +2,7 @@
 
 客户端工具名称可能加前缀。发现当前连接实际提供的工具，并使用实际名称；下表是当前本地包的用途索引，实际参数、枚举、分页和返回字段以已连接工具的 schema 为准，不硬编码旧版十工具清单。
 
-本地包对齐 [官方 MCP 指南](https://docmost.com/docs/user-guide/mcp) 列出的 20 个工具能力，另有软删除/恢复两个扩展，共 22 个工具（10 个读取、12 个写入）；只读连接仅注册 10 个读取工具。官方只公布名称和用途，未公布输入 schema；本地参数依据实际 REST DTO 和包装层设计，不声称与私有企业 MCP 实现完全一致。
+下面基础表对齐 [官方 MCP 指南](https://docmost.com/docs/user-guide/mcp) 公开能力，另有软删除/恢复扩展。MD 与知识库工具按当前配置另外发现，不用基础表计数判断可选能力。官方只公布名称和用途，未公布输入 schema；本地参数依据实际 REST DTO 和包装层设计，不声称与私有企业 MCP 实现完全一致。
 
 | 工具 | 读写 / 来源 | 输入参数（`?` 表示可选） | 使用时机 |
 | --- | --- | --- | --- |
@@ -30,6 +30,16 @@
 | `restore_page` | 写入 / 本地扩展 | `pageId`（UUID） | 恢复整棵子树，含本次删除之前就已软删的后代；不会恢复分享。 |
 
 `spaceId` 和 `creatorId` 传入时必须为 UUID。页面工具的 `pageId` 可为 UUID 或裸 slugId，不能传完整页面 URL；**删除和恢复必须使用 `get_page` 返回的规范 UUID `id`**。移动前包装层会解析源页和父页的规范 UUID。`limit` 为 1–100，默认 20。列表按 `meta.nextCursor` 翻页；页面和附件搜索的 `offset` 默认 0，搜索结果没有 total，不能据此宣称完整覆盖。子页和评论列表只代表当前用户可见内容。
+
+## 可选知识库工具
+
+| 工具 | 输入 | 行为与结果 |
+| --- | --- | --- |
+| `sync_page_to_knowledge` | `pageId`（规范 UUID） | 写知识库：读取 Docmost 当前已保存完整 Markdown，登记并入库，后续 MCP 修改跟进；不修改 Docmost。 |
+| `get_page_knowledge_status` | `pageId?`（规范 UUID） | 只读页状态或登记列表，含关联标识、URI、原文哈希、进度和安全错误；未登记不自动导出。 |
+| `retry_knowledge_sync` | `bindingId`（从状态结果取得） | 对账后仅补知识库阶段，不重放 Docmost 写入，不接受任意 URI。 |
+
+页面主动同步无需本地 MD、`DOCMOST_SYNC_ROOT`、MD 绑定或条件同步路由。需要知识库连接及 `DOCMOST_KNOWLEDGE_STATE_DIR` 私有绝对目录（默认复用已有 `DOCMOST_SYNC_STATE_DIR`）。页面与 MD 来源共用账本；同时启用 MD 时显式知识库状态目录须等于 MD 状态目录，已绑定 MD 的页面不能自动转成页面来源。单页快照的 `localHash` / `remoteRevision` 为已保存 Markdown SHA-256 指纹，不是 CAS/live 协议；知识库进度独立看 `knowledgeBase.state`，未追上已保存正文时为 `waiting_docmost`，未登记页为 `not_enrolled`。普通新建页不自动外发；已登记页的 MCP 更新、移动页面/祖先、跨空间移动、删除/恢复才跟进，网页直接修改保存后再主动同步。配置阻塞、未登记、只读、页面权限、后端处理和目标变化分别按实际返回报告，详见 [知识库同步](knowledge-sync.md)。OpenViking 保留 `retry_openviking_sync` 兼容别名。
 
 ## 默认创建位置
 

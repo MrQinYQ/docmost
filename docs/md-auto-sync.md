@@ -29,11 +29,11 @@ DOCMOST_SYNC_STATE_DIR = "/Users/your-name/.config/docmost/md-sync"
 
 `DOCMOST_SYNC_ROOT` 是允许关联的现有源目录；目录内的文件不会自动全部上传。`DOCMOST_SYNC_STATE_DIR` 是私有状态目录，两者不能相同，也不能互相包含。状态目录为当前用户所有，权限 `0700`，文件 `0600`。关联元数据记录摘要、版本、待确认操作和页面租约，不包含正文；**启用 OpenViking 镜像后，这个目录还会暂存原始 MD 正文快照**，每份最多 1,000,000 字节，非符号链接，确认处理且恢复不再需要后清除。状态与快照均不保存密码或凭据，不要将私有目录提交 Git。Docmost 凭据仍保存在原来的仓库外私有文件。
 
-重启 MCP 后，可写模式增加四个本地扩展工具，共 26 个；只读模式只增加状态查询，共 11 个。同时选择 OpenViking 时，可写模式再增加 `retry_knowledge_sync` 和兼容别名 `retry_openviking_sync`，共 28 个，只读模式仍为 11 个。未配置目录时仍是原来的 22 / 10 个工具。`DOCMOST_READ_ONLY=1` 不启动上传，也不写入、重建或删除知识库。
+重启 MCP 后按实际 `tools/list` 发现 MD 四个入口、页面主动入库入口及知识库重试，不依赖旧工具总数。只有相应配置有效时扩展工具才出现；`DOCMOST_READ_ONLY=1` 仅暴露对应状态读取，不启动上传，也不写入、重建或删除知识库。
 
 标准 MCP/Skill 安装应主动提供“不启用知识库 / OpenViking”选择；已有明确选择不重复问。新安装明确保存 `DOCMOST_KNOWLEDGE_PROVIDER=none|openviking`。`none` 跳过后端问题并覆盖遗留 OpenViking 变量，不读取 Key 或发起网络请求；省略 provider 时仅为旧安装兼容由已有 URL 推断 OpenViking。明确选择 OpenViking 却缺少 URL、未知 provider 或连接失败单独报告知识库状态，Docmost 成功仍独立成立。
 
-OpenViking 使用 `DOCMOST_OPENVIKING_URL` 与仓库外私有 `DOCMOST_OPENVIKING_API_KEY_FILE`；账户、用户和私有根可额外校验。无需安装 `ov`、Python 或额外 npm 包，也不部署服务；远程使用 HTTPS，本机可用 loopback HTTP。Key 与 Docmost 凭据不能互用。独立只读 `--check-knowledge` 无需 Docmost 登录或默认空间，返回安全状态、身份和私有根；检查不证明写入、摘要或索引能力。完整配置及用户隐藏输入保存 Key 的步骤见 [OpenViking 指南](openviking-sync.md)。
+OpenViking 使用 `DOCMOST_OPENVIKING_URL` 与仓库外私有 `DOCMOST_OPENVIKING_API_KEY_FILE`；个人/共享模式使用 `DOCMOST_OPENVIKING_SCOPE=personal|shared`，默认为个人；账户、用户和所选资源根可额外校验。个人默认根为 `viking://user/<用户>/resources/docmost-mcp`，共享为同一 account 的 `viking://resources/docmost-mcp`，继承目标 ACL，不复制 Docmost 权限。无需安装 `ov`、Python 或额外 npm 包，也不部署服务；远程使用 HTTPS，本机可用 loopback HTTP。Key 与 Docmost 凭据不能互用。独立只读 `--check-knowledge` 无需 Docmost 登录或默认空间，返回安全状态、身份和所选资源根；检查不证明写入、摘要或索引能力。完整配置及用户隐藏输入保存 Key 的步骤见 [OpenViking 指南](openviking-sync.md)。
 
 ## 关联与保存
 
@@ -57,7 +57,7 @@ OpenViking 使用 `DOCMOST_OPENVIKING_URL` 与仓库外私有 `DOCMOST_OPENVIKIN
 
 启用镜像后，既有绑定只有在预览目标版本同时等于实时和持久化版本时，才将初始 MD 视为 Docmost 已确认；两端不匹配时等待下一次确认上传或显式解决，不提前导出本地全文。每次镜像使用该次确认的快照，不以稍后的本地保存替换先前任务正文。
 
-连续保存会等待约 1 秒后合并，同一关联串行处理。编辑器用临时文件替换原文件的保存方式也能检测。本地 MD 只提供正文，不自动修改 Docmost 标题、空间、父页或本地图片/附件。镜像路径保留 Docmost 空间与父子层级，使用部署哈希、工作区 UUID 以及安全名称加 UUID；明确 MCP 改名/移动或下次确认保存会重新核对布局。文件消失、改名或暂时变空会暂停处理，不删除或清空两端文档。
+连续保存会等待约 1 秒后合并，同一关联串行处理。编辑器用临时文件替换原文件的保存方式也能检测。本地 MD 只提供正文，不自动修改 Docmost 标题、空间、父页或本地图片/附件。镜像路径保留 Docmost 空间与父子层级，使用可读空间名、完整父页标题链和页面标题，仅名称冲突时加稳定短后缀，部署/工作区/页面身份留在私有账本；明确 MCP 改名/移动或下次确认保存会重新核对布局。文件消失、改名或暂时变空会暂停处理，不删除或清空两端文档。
 
 ## 冲突与待确认
 
