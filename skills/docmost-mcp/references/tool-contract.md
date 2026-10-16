@@ -99,3 +99,16 @@
 结果引用使用工具返回的 URL。缺少 URL 时展示标题、空间和 ID，不凭未知路由拼接链接。`list_pages` 是近期列表，不能判断某页是否有后代。`list_child_pages` 可按需分页遍历可见直接子页，但权限过滤不能证明没有隐藏后代，也不能可靠枚举待恢复的软删后代；搜索和分页结果不保证覆盖整个工作区。删除/恢复仍须整棵受影响子树授权，恢复包含此前已软删后代。
 
 若工具缺失、返回身份/许可错误或未知参数契约，报告具体限制；不要自行构造 HTTP 后门、绕过企业许可或伪造 API Token。
+# Git 发布扩展
+
+仅配置 `DOCMOST_GIT_ROOT` 及仓库外私有状态目录时出现；只读连接只暴露状态工具。以当前 tools/list schema 为准。
+
+| 工具 | 参数与行为 |
+| --- | --- |
+| bind_git_document | filePath、pageId、commit、branch；已有记录加 replaceBindingId。仅登记与原文一致的提交基线，保留单条记录。 |
+| publish_git_documents | commit、branch，选填 bindingIds、remote。完整对象 ID 与完整 refs/heads 分支，逐文档结果；正文仅来自提交。remote 是已配置别名，只核对推送，不执行 push。 |
+| get_git_document_status | 可选 bindingId；指定记录时读取 currentRevision/currentPersistedRevision，不外发知识库。 |
+| set_git_document_sync | bindingId、action=pause/resume/unbind/rebind；仅 rebind 需 filePath。保留远端内容，恢复不覆盖冲突。 |
+| resolve_git_document_conflict | bindingId、commit、branch、expectedRevision。用户选定合并结果并提交后显式条件解决；再次变动继续冲突。 |
+
+Git 来源仍使用原有 retry_knowledge_sync，只补已确认快照。GIT_BRANCH_CONFLICT 需先合并上次 published 提交；GIT_HISTORY_MISSING 需补足历史；GIT_SOURCE_DELETED 保留远端；GIT_REF_CHANGED 需重新检查 HEAD。未确认请求只读对账，不普通更新兜底，不为各分支建副本。

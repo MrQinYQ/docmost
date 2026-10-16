@@ -380,3 +380,6 @@ cp -R /absolute/path/docmost-mcp-source/skills/docmost-mcp .agents/skills/docmos
 以上不能代替目标公司部署验收。真实公司接入需要用户在本机亲自登录，再用 `--list-spaces`、`--check` 和已授权客户端查询确认。页面写入、删除和恢复须分别在用户授权范围验证；未执行时如实标记未验收。当前密码登录模式不完成 SSO/MFA，也不接受旧版无 `sessionId` 的不可撤销凭据。
 
 本地包遵循仓库 [AGPL-3.0 许可证](../LICENSE)。企业目录另有许可证；MCP 不复制或补齐企业实现。个人会话调用现有社区登录和文档接口，企业 API Key 能力仍由部署许可与管理员配置决定。[Docmost 官方 API 参考](https://docmost.com/api-docs)
+# Git 提交后发布
+
+保存即同步之外，可选择 Git 来源，在任意分支成功提交后发布固定 Markdown 快照，并通过 `git-delivery` Skill 执行 add/commit/push/指定分支合并。多个分支共用同一页面，冲突暂停。安装与私有账本、旧记录转换及自验见 [Git Delivery](git-delivery.md)。配置本身不绑定文件，也不安装 Git hook。

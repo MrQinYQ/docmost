@@ -50,6 +50,7 @@ async function logout(config) {
 try {
   const args = process.argv.slice(2);
   if (args.length === 1 && args[0] === '--help') {
+    process.stdout.write('Optional Git publication: DOCMOST_GIT_ROOT and DOCMOST_KNOWLEDGE_STATE_DIR (or existing DOCMOST_SYNC_STATE_DIR). Publish enrolled Markdown from exact commits on any branch through publish_git_documents. Uses conditional sync endpoints; does not watch workspace saves or create pages. get_git_document_status reads durable associations.\n');
     process.stdout.write('Page knowledge sync: DOCMOST_KNOWLEDGE_STATE_DIR (private absolute directory; defaults to DOCMOST_SYNC_STATE_DIR).\nsync_page_to_knowledge enrolls a saved Docmost page; get_page_knowledge_status reports its full-original URI and processing state. No local MD root or conditional endpoint is required for page enrollment.\n');
     process.stdout.write('Docmost local MCP (stdio)\nRequired: DOCMOST_URL, DOCMOST_DEFAULT_SPACE_ID and an explicit credential source.\nCommunity: DOCMOST_AUTH_MODE=session and DOCMOST_SESSION_FILE (private absolute path).\nAPI Key: DOCMOST_AUTH_MODE=api_key (compatibility default) and DOCMOST_API_TOKEN or DOCMOST_API_TOKEN_FILE.\nOptional: DOCMOST_DEFAULT_PARENT_PAGE_ID, DOCMOST_READ_ONLY=1, DOCMOST_TIMEOUT_MS, DOCMOST_ALLOW_LOCAL_HTTP=1 (loopback only)\nOptional Markdown sync: DOCMOST_SYNC_ROOT and DOCMOST_SYNC_STATE_DIR (separate absolute directories). Only explicitly bound .md files sync while stdio is running. Requires compatible conditional sync endpoints; no uploads in read-only mode.\n--login performs personal email/password login in your own local terminal; no password is stored.\n--logout revokes only the dedicated personal session and removes its local file.\n--list-spaces [--cursor value] discovers accessible space UUIDs before configuring a default.\nLogin/logout/space discovery do not require a default space.\nOpenViking scope: DOCMOST_OPENVIKING_SCOPE=personal (default) or shared; DOCMOST_OPENVIKING_ROOT_URI overrides the matching concrete resource root. Shared roots inherit OpenViking ACL, not Docmost ACL.\nOptional knowledge base: DOCMOST_KNOWLEDGE_PROVIDER=none|openviking; omitted provider preserves a configured legacy OpenViking URL.\n--check-knowledge validates only the selected knowledge-base connection and selected resource namespace; no Docmost login or default space is needed.\n--check validates identity, default space and optional parent; without flags starts stdio.\n');
   } else if (args.length === 1 && args[0] === '--check-knowledge') {
@@ -77,7 +78,7 @@ try {
     } else if (discovery) {
       process.stdout.write(`${JSON.stringify(await listAccessibleSpaces(config, cursor))}\n`);
     } else {
-      const syncManager = config.syncRoot || (config.syncStateDir && knowledgeSelection(config))
+      const syncManager = config.syncRoot || config.gitRoot || (config.syncStateDir && knowledgeSelection(config))
         ? createMarkdownSync(config, { api: createApiClient(config) }) : undefined;
       const transport = new StdioServerTransport();
       const handle = serveStdio(() => createDocmostServer(config, { syncManager }), {

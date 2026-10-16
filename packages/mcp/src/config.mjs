@@ -15,6 +15,11 @@ function flag(env, name) {
   return value === '1';
 }
 
+function contains(parent, child) {
+  const path = relative(parent, child);
+  return path === '' || (path !== '..' && !path.startsWith(`..${sep}`) && !isAbsolute(path));
+}
+
 export function loadConnectionConfig(env = process.env, { requireDefaultSpace = true } = {}) {
   let base;
   try { base = new URL(env.DOCMOST_URL); }
@@ -28,19 +33,22 @@ export function loadConnectionConfig(env = process.env, { requireDefaultSpace = 
   const timeoutMs = Number(env.DOCMOST_TIMEOUT_MS ?? 30000);
   if (!Number.isInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 120000)
     throw new ConfigError('DOCMOST_TIMEOUT_MS must be an integer from 100 to 120000.');
+  let gitRoot = env.DOCMOST_GIT_ROOT?.trim() || undefined;
+  if (gitRoot) {
+    if (!isAbsolute(gitRoot)) throw new ConfigError('DOCMOST_GIT_ROOT must be an absolute Git repository directory.');
+    gitRoot = resolve(gitRoot);
+  }
   let syncRoot = env.DOCMOST_SYNC_ROOT?.trim() || undefined;
   let syncStateDir = env.DOCMOST_SYNC_STATE_DIR?.trim() || undefined;
-  if (Boolean(syncRoot) !== Boolean(syncStateDir))
+  if (syncStateDir && !isAbsolute(syncStateDir))
+    throw new ConfigError('DOCMOST_SYNC_STATE_DIR must be an absolute private state directory.');
+  if ((syncRoot && !syncStateDir) || (!syncRoot && syncStateDir && !gitRoot))
     throw new ConfigError('Set both DOCMOST_SYNC_ROOT and DOCMOST_SYNC_STATE_DIR to enable Markdown synchronization.');
   if (syncRoot) {
     if (!isAbsolute(syncRoot) || !isAbsolute(syncStateDir))
       throw new ConfigError('Markdown sync source and state directories must be absolute paths.');
     syncRoot = resolve(syncRoot);
     syncStateDir = resolve(syncStateDir);
-    const contains = (parent, child) => {
-      const path = relative(parent, child);
-      return path === '' || (path !== '..' && !path.startsWith(`..${sep}`) && !isAbsolute(path));
-    };
     if (contains(syncRoot, syncStateDir) || contains(syncStateDir, syncRoot))
       throw new ConfigError('Markdown sync source and private state directories must be separate, with neither containing the other.');
   }
@@ -49,9 +57,12 @@ export function loadConnectionConfig(env = process.env, { requireDefaultSpace = 
     if (!isAbsolute(knowledgeStateDir))
       throw new ConfigError('DOCMOST_KNOWLEDGE_STATE_DIR must be an absolute private state directory.');
     knowledgeStateDir = resolve(knowledgeStateDir);
-    if (syncRoot && knowledgeStateDir !== syncStateDir)
+    if (syncStateDir && knowledgeStateDir !== resolve(syncStateDir))
       throw new ConfigError('Markdown and page knowledge synchronization must share the same private state directory.');
   }
+  if (gitRoot && (!knowledgeStateDir || contains(gitRoot, knowledgeStateDir) || contains(knowledgeStateDir, gitRoot)))
+    throw new ConfigError('Git publishing requires a separate private state directory outside the source root.');
+  if (syncStateDir) syncStateDir = resolve(syncStateDir);
 
   function configuredUuid(name) {
     const value = env[name]?.trim();
@@ -80,7 +91,7 @@ export function loadConnectionConfig(env = process.env, { requireDefaultSpace = 
     throw new ConfigError('API Key mode cannot use DOCMOST_SESSION_FILE. Select exactly one authentication mode.');
   }
   const knowledgeBase = loadKnowledgeConfig(env);
-  return { origin: base.origin, apiBase: `${base.origin}/api/`, timeoutMs, readOnly, defaultSpaceId, defaultParentPageId, authMode, sessionFile, allowLocalHttp: localHttp, syncRoot, syncStateDir: syncStateDir ?? knowledgeStateDir, knowledgeStateDir,
+  return { origin: base.origin, apiBase: `${base.origin}/api/`, timeoutMs, readOnly, defaultSpaceId, defaultParentPageId, authMode, sessionFile, allowLocalHttp: localHttp, gitRoot, syncRoot, syncStateDir: syncStateDir ?? knowledgeStateDir, knowledgeStateDir,
     knowledgeBase, ...(knowledgeBase?.provider === 'openviking' ? { openViking: knowledgeBase.config } : {}) };
 }
 

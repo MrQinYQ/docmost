@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { knowledgeSelection, knowledgeConnectionStatus } from './knowledge.mjs';
 import { ApiError, createApiClient } from './api.mjs';
 import { ConfigError } from './config.mjs';
-import { digest } from './sync-files.mjs';
+import { digest, validRelativeFile } from './sync-files.mjs';
 
 const id = z.string().trim().min(1).max(128);
 const uuid = z.uuid();
@@ -141,7 +141,7 @@ export function createDocmostServer(config, { fetchImpl, syncManager } = {}) {
         readOnlyHint: readOnly,
         destructiveHint: destructive,
         idempotentHint: readOnly,
-        openWorldHint: mirrorEnabled && !readOnly && ['sync_page_to_knowledge', 'bind_markdown', 'resolve_markdown_sync', 'retry_knowledge_sync', 'retry_openviking_sync', 'set_markdown_sync', 'delete_page', 'restore_page', 'move_page', 'move_page_to_space', 'update_page', 'update_space'].includes(name),
+        openWorldHint: mirrorEnabled && !readOnly && ['bind_git_document', 'publish_git_documents', 'resolve_git_document_conflict', 'sync_page_to_knowledge', 'bind_markdown', 'resolve_markdown_sync', 'retry_knowledge_sync', 'retry_openviking_sync', 'set_markdown_sync', 'delete_page', 'restore_page', 'move_page', 'move_page_to_space', 'update_page', 'update_space'].includes(name),
         untrustedContentHint: true,
       },
     }, async (input, context) => {
@@ -314,6 +314,28 @@ export function createDocmostServer(config, { fetchImpl, syncManager } = {}) {
     register('resolve_markdown_sync', 'Explicitly resolve a paused conflict by conditionally uploading the current local or manually merged Markdown body and resuming. Requires the currently observed remote revision; a newer remote change is rejected. Replaces the entire page body. Use only after the user chooses the local/merged content.', z.strictObject({
       bindingId, expectedRevision: z.string().regex(/^[a-f0-9]{64}$/),
     }), false, input => syncManager.resolve(input), true);
+  }
+  if (config.gitRoot && syncManager) {
+    const commit = z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/);
+    const branch = z.string().min(12).max(1024).startsWith('refs/heads/');
+    const filePath = z.string().min(1).max(4096).refine(validRelativeFile, 'Use a relative .md path without traversal.');
+    register('bind_git_document', 'Associate an explicit committed Markdown path with an existing canonical Docmost page. Requires matching live/persisted baseline and conditional sync endpoints. No Docmost write or page creation. Future explicit commit publication uses the same page across branches. replaceBindingId explicitly converts the same page from its old settled source while retaining its knowledge target.', z.strictObject({
+      filePath, pageId: uuid, commit, branch, replaceBindingId: uuid.optional(),
+    }), false, input => syncManager.bindGitDocument(input));
+    register('publish_git_documents', 'Publish full Markdown blobs from an exact branch commit for enrolled Git documents only. Any branch, before or after push. Never reads uncommitted workspace content or creates pages. Divergent histories and Docmost version conflicts pause affected documents. Knowledge failure does not repeat Docmost writes. Optional remote names an existing Git remote to independently check its ref; no Git push is performed.', z.strictObject({
+      commit, branch, bindingIds: z.array(uuid).min(1).max(50).refine(values => new Set(values).size === values.length).optional(),
+      remote: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/).optional(),
+    }), false, input => syncManager.publishGitDocuments(input), true);
+    register('get_git_document_status', 'Read durable Git associations, confirmed commit/path/hash, separate knowledge state and safe errors. With bindingId, observe current live/persisted Docmost revisions without changing the stored baseline. Does not upload, publish or resolve conflicts.', z.strictObject({ bindingId: uuid.optional() }), true,
+      input => syncManager.getGitDocumentStatus(input));
+    register('set_git_document_sync', 'Pause, resume, unbind or explicitly rebind the path of a Git document. No Docmost write/delete. Resume preserves conflicts and baselines; pending writes must be reconciled before unbinding/rebinding.', z.strictObject({
+      bindingId: uuid, action: z.enum(['pause', 'resume', 'unbind', 'rebind']), filePath: filePath.optional(),
+    }).superRefine((input, ctx) => {
+      if ((input.action === 'rebind') !== (input.filePath !== undefined)) ctx.addIssue({ code: 'custom', message: 'Only rebind requires filePath.', path: ['filePath'] });
+    }), false, input => syncManager.setGitDocumentSync(input));
+    register('resolve_git_document_conflict', 'Explicitly publish a user-selected merged commit against the currently observed Docmost revision. Replaces the complete body. The merged commit must include the last published commit; a newer remote edit rejects the request. Never treat resume as overwrite authorization.', z.strictObject({
+      bindingId: uuid, commit, branch, expectedRevision: z.string().regex(/^[a-f0-9]{64}$/),
+    }), false, input => syncManager.resolveGitDocumentConflict(input), true);
   }
   if (mirrorEnabled) {
     register('sync_page_to_knowledge', 'Read the current saved full Markdown of one accessible canonical Docmost page and enroll it for knowledge synchronization. No local Markdown file, browser edit watcher, conditional-sync endpoint or ov CLI is required. Keeps Docmost space and parent hierarchy. Later MCP update/move/delete/restore operations synchronize enrolled pages. Repeated calls refresh the saved snapshot. Does not alter Docmost or enroll descendants. Existing local Markdown bindings cannot be converted.', z.strictObject({ pageId: uuid }), false,

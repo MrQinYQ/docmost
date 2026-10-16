@@ -63,6 +63,8 @@ description: 用于安装更新 Docmost MCP、社区版个人会话登录、部�
 
 ## 本地 MD 自动同步
 
+用户要求“提交后发布”“任何分支共用页面”时使用 Git 来源：读取 [工具约定](references/tool-contract.md) 的 Git 发布部分，并由 `git-delivery` Skill 在每次成功 commit 后、push 前调用 Git 工具。`DOCMOST_GIT_ROOT` 与仓库外私有账本必填，正文来自固定提交，不受未提交保存影响。已有 MD/页面记录须通过 `replaceBindingId` 显式转换，不能另建账本接管或同时启用保存上传。分支/网页冲突暂停；知识库重试只处理已确认提交。不使用普通 `update_page` 或 ov 绕过条件更新。
+
 用户要求关联本地 Markdown 或配置保存自动同步时，读取 [自动同步](references/markdown-sync.md)。同步是单向 MD → Docmost，跟随实际 MCP 进程生命周期。目录配置不自动授权上传全部文件；只处理明确绑定并启用的文件。绑定后未来保存会替换整页正文，关联操作本身不初始上传；解释这一行为后按已有授权执行。
 
 发现实际同步工具与 schema：`bind_markdown`、`get_markdown_sync_status`、`set_markdown_sync`、`resolve_markdown_sync`。仅同步专用接口有条件写入保证，普通 `update_page` 仍没有。缺少部署接口时报告不支持，不退回普通更新绕过冲突保护。冲突/待确认状态先读取核对；用户明确选择本地或合并结果后才显式解决，不能从“恢复监听”推导覆盖授权。

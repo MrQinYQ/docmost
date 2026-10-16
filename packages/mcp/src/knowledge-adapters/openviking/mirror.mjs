@@ -367,7 +367,7 @@ export function createMirror(config, { client, post, store, persist, signal, del
           claims, isOccupied: async uri => await client.list(uri, signal) !== undefined }, post);
         mirror.nodes = layout.nodes; job.layoutVersion = 2;
         job.uri = layout.uri; job.oldUri = mirror.uri && mirror.uri !== job.uri ? mirror.uri : undefined;
-        if (binding.source === 'docmost') {
+        if (['docmost', 'git'].includes(binding.source)) {
           job.indexUris = [layout.pageDirectory]; job.indexCursor = 0;
           for (let depth = 0; depth <= layout.parentIds.length; depth++) job.indexUris.push(parentUri(job.indexUris.at(-1)));
         }
@@ -529,5 +529,5 @@ export function createMirror(config, { client, post, store, persist, signal, del
     await persist(binding); await process(binding); return mirrorStatus(binding);
   }
   return { initial, prepare, confirm, discard, canProcess, process, retry, deleteConfirmed,
-    needsRefresh: binding => binding.source === 'docmost' && !binding.mirror?.ancestorsReady };
+    needsRefresh: binding => ['docmost', 'git'].includes(binding.source) && !binding.mirror?.ancestorsReady };
 }

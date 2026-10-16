@@ -1,0 +1,4 @@
+interface:
+  display_name: "Git Delivery"
+  short_description: "提交、推送与指定分支合并，并同步已关联的提交文档到 Docmost"
+  default_prompt: "使用 $git-delivery 完成当前仓库已授权的提交和推送，并同步已登记的文档。"

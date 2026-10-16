@@ -57,7 +57,7 @@ export async function createSyncStore(path, { readOnly = false } = {}) {
       const opened = await handle.stat();
       if (!safeFile(opened) || !sameFile(before, opened)) throw fail();
       const bytes = await handle.readFile();
-      const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+      const text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: raw }).decode(bytes);
       if (Buffer.byteLength(text) > 1_000_000) throw fail();
       await check(name);
       if (!sameFile(opened, await lstat(pathname))) throw fail();
