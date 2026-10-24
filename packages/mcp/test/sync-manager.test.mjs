@@ -232,13 +232,14 @@ test('identity or space changes block a binding instead of retargeting it', asyn
   }
 });
 
-test('shared page leases deny duplicate managers and close releases only owned leases', async t => {
+test('idle managers share the ledger without reserving page leases', async t => {
   const f = await fixture(t);
   const first = f.make();
   const binding = await first.bind({ filePath: 'note.md', pageId });
   const second = f.make();
   await second.start();
-  assert.equal((await cached(second, binding.bindingId)).error.code, 'LEASE_BUSY');
+  assert.equal((await cached(second, binding.bindingId)).state, 'watching');
+  assert.deepEqual(await readdir(join(f.state, 'leases')), []);
   await first.close();
   await second.close();
   const third = f.make();
@@ -248,14 +249,14 @@ test('shared page leases deny duplicate managers and close releases only owned l
   assert.deepEqual(await readdir(join(f.state, 'leases')), []);
 });
 
-test('stale uncertain leases are reported without being silently stolen', async t => {
+test('a confirmed exited owner is reclaimed inside the operation mutex', async t => {
   const f = await fixture(t);
   await mkdir(join(f.state, 'leases'), { recursive: true, mode: 0o700 });
   const leasePath = join(f.state, 'leases', `${hash(`${f.config.origin}|${workspaceId}|${pageId}`)}.json`);
   await writeFile(leasePath, JSON.stringify({ pid: 999999999, nonce: 'stale-fixture' }), { mode: 0o600 });
   const manager = f.make();
-  await assert.rejects(manager.bind({ filePath: 'note.md', pageId }), { code: 'LEASE_BUSY' });
-  assert.equal(JSON.parse(await readFile(leasePath, 'utf8')).nonce, 'stale-fixture');
+  assert.equal((await manager.bind({ filePath: 'note.md', pageId })).state, 'watching');
+  assert.deepEqual(await readdir(join(f.state, 'leases')), []);
 });
 
 test('source validation rejects escape paths, symlinks, nonfiles and invalid content', async t => {
@@ -481,8 +482,12 @@ test('lease substitution stops an existing manager from writing or deleting the 
   const f = await fixture(t);
   const manager = f.make();
   const binding = await manager.bind({ filePath: 'note.md', pageId });
-  const leasePath = join(f.state, 'leases', (await readdir(join(f.state, 'leases')))[0]);
-  await writeFile(leasePath, JSON.stringify({ pid: process.pid, nonce: 'replacement-lease' }), { mode: 0o600 });
+  const leasePath = join(f.state, 'leases', hash(f.config.origin + '|' + workspaceId + '|' + pageId) + '.json');
+  f.api.hook = async (path, body) => {
+    if (path === 'pages/sync-state' && body.content === '# Replaced lease\n') {
+      await writeFile(leasePath, JSON.stringify({ pid: process.pid, nonce: 'replacement-lease' }), { mode: 0o600 });
+    }
+  };
   await writeFile(join(f.root, 'note.md'), '# Replaced lease\n');
   const blocked = await eventually(() => cached(manager, binding.bindingId), value => value.error?.code === 'LEASE_BUSY');
   assert.equal(blocked.state, 'blocked');
@@ -554,7 +559,7 @@ test('status list stays cached while a read-only single binding observes without
   assert.equal(f.calls.at(-1).path, 'pages/sync-state');
   assert.equal(f.calls.at(-1).body.content, undefined);
   assert.equal(f.calls.at(-1).mutation, false);
-  assert.equal((await readdir(join(f.state, 'leases'))).length, 1);
+  assert.equal((await readdir(join(f.state, 'leases'))).length, 0);
   assert.equal(uploads(f.calls).length, 0);
 });
 
@@ -641,6 +646,7 @@ test('unbind of an old target still refuses a real shared page lease owner', asy
   const f = await fixture(t);
   const first = f.make();
   const binding = await first.bind({ filePath: 'note.md', pageId });
+  await writeFile(join(f.state, 'leases', hash(f.config.origin + '|' + workspaceId + '|' + pageId) + '.json'), JSON.stringify({ pid: process.pid, nonce: 'live-legacy-owner' }), { mode: 0o600 });
   const newRoot = join(f.base, 'different-markdown');
   await mkdir(newRoot, { mode: 0o700 });
   const second = createMarkdownSync({ ...f.config, syncRoot: newRoot }, { api: f.api, debounceMs: 20, scanMs: 10 });

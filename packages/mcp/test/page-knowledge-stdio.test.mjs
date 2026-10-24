@@ -16,11 +16,14 @@ const pageId = '00000000-0000-4000-8000-000000000004';
 async function fixture(t, { readOnly = false, provider = 'openviking' } = {}) {
   const temp = await realpath(await mkdtemp(join(tmpdir(), 'docmost-page-stdio-')));
   const calls = [];
-  let content = '# Complete original\n\n第一行\n', rejectUpdate = false, rejectCapture = false, deferUpdates = false;
+  let content = '# Complete original\n\n第一行\n', rejectUpdate = false, rejectCapture = false, deferUpdates = false, heldUpdate;
   const http = createServer(async (req, res) => {
     const chunks = []; for await (const chunk of req) chunks.push(chunk);
     const body = JSON.parse(Buffer.concat(chunks).toString() || '{}');
     calls.push({ path: req.url, body });
+    if (req.url === '/api/pages/update' && heldUpdate) {
+      const held = heldUpdate; heldUpdate = undefined; held.enter(); await held.wait;
+    }
     if ((req.url === '/api/pages/update' && rejectUpdate)
       || (req.url === '/api/pages/info' && body.format === 'markdown' && rejectCapture)) {
       rejectCapture = false;
@@ -82,7 +85,8 @@ async function fixture(t, { readOnly = false, provider = 'openviking' } = {}) {
     await rm(temp, { force: true, recursive: true });
   });
   return { ...await connect(), connect, stateDir: join(temp, 'ledger'), calls,
-    rejectUpdates() { rejectUpdate = true; }, rejectCapture() { rejectCapture = true; }, deferUpdates() { deferUpdates = true; } };
+    rejectUpdates() { rejectUpdate = true; }, rejectCapture() { rejectCapture = true; }, deferUpdates() { deferUpdates = true; },
+    holdUpdate() { let enter, release; const entered = new Promise(r => { enter = r; }), wait = new Promise(r => { release = r; }); heldUpdate = { enter, wait }; return { entered, release }; } };
 }
 
 test('page-only MCP exposes enrollment and status without a Markdown root or conditional endpoints', async t => {
@@ -115,21 +119,33 @@ test('none does not expose page export tools even when a private state directory
   assert.ok(!names.includes('sync_page_to_knowledge')); assert.ok(!names.includes('get_page_knowledge_status'));
 });
 
-test('an enrolled page held by another startup process reports LEASE_BUSY without taking its lease or writing Docmost', async t => {
+test('two connected page clients reuse the same enrollment and release leases after work', async t => {
   const f = await fixture(t);
-  await f.call('sync_page_to_knowledge', { pageId });
-  const leases = join(f.stateDir, 'leases');
-  const owned = new Map(await Promise.all((await readdir(leases)).map(async name => [name, await readFile(join(leases, name), 'utf8')])));
-  assert.ok(owned.size > 0, 'the original process must own a live page lease');
+  const first = await f.call('sync_page_to_knowledge', { pageId });
+  assert.deepEqual(await readdir(join(f.stateDir, 'leases')), []);
   const peer = await f.connect();
-  const response = await peer.request('tools/call', { name: 'sync_page_to_knowledge', arguments: { pageId } });
-  const reply = response.result;
-  assert.equal(reply.isError, true);
-  const remaining = new Map(await Promise.all((await readdir(leases)).map(async name => [name, await readFile(join(leases, name), 'utf8')])));
-  assert.deepEqual(remaining, owned, 'the second process must not replace the original lease nonce or owner');
+  const second = await peer.call('sync_page_to_knowledge', { pageId });
+  assert.equal(second.bindingId, first.bindingId);
+  assert.deepEqual(await readdir(join(f.stateDir, 'leases')), []);
+  assert.deepEqual(await readdir(join(f.stateDir, 'operations')), []);
   assert.ok(f.calls.every(call => ['/api/users/me', '/api/pages/info', '/api/spaces/info'].includes(call.path)),
-    'enrollment and its lease rejection must never write Docmost');
-  assert.equal(JSON.parse(reply.content[0].text).error.code, 'LEASE_BUSY');
+    'enrollment never writes Docmost');
+});
+
+test('the page update scope covers capture, the remote write and refresh across two processes', { timeout: 12000 }, async t => {
+  const f = await fixture(t); await f.call('sync_page_to_knowledge', { pageId }); const peer = await f.connect();
+  const held = f.holdUpdate(), first = f.call('update_page', { pageId, content: 'First append', operation: 'append' }); let second;
+  try {
+    await held.entered;
+    assert.ok((await readdir(join(f.stateDir, 'leases'))).length > 0, 'the active remote operation still owns its page');
+    second = peer.call('update_page', { pageId, content: 'Second append', operation: 'append' });
+    await new Promise(r => setTimeout(r, 100));
+    assert.equal(f.calls.filter(c => c.path === '/api/pages/update').length, 1, 'the second process must wait through the first remote write');
+  } finally { held.release(); }
+  await first; const result = await second;
+  assert.ok(result.content.includes('First append') && result.content.includes('Second append'));
+  assert.deepEqual(await readdir(join(f.stateDir, 'leases')), []);
+  assert.deepEqual(await readdir(join(f.stateDir, 'operations')), []);
 });
 
 test('a failed knowledge preflight stays separate from a successful Docmost edit and cannot publish stale content', async t => {

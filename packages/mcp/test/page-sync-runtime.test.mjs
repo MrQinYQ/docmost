@@ -173,11 +173,13 @@ test('page export is idempotent and rejects identity changes before transferring
   assert.equal((await f.manager.pageStatus({ pageId })).error.code, 'IDENTITY_CHANGED');
 });
 
-test('page sync reports a busy startup lease without reading source or changing its owner', async t => {
+test('page sync protects a live legacy owner without reading source or changing its lease', async t => {
   const f = await fixture(t); const binding = await f.manager.syncPage({ pageId }); await settled(f.manager);
   const ledgerPath = join(f.config.knowledgeStateDir, 'bindings', binding.bindingId + '.json');
   const leasePath = join(f.config.knowledgeStateDir, 'leases', hash(`${f.config.origin}|${workspaceId}|${pageId}`) + '.json');
-  const ownedLease = await readFile(leasePath, 'utf8');
+  await eventually(async () => (await readdir(join(f.config.knowledgeStateDir, 'leases'))).length, value => value === 0);
+  const ownedLease = JSON.stringify({ pid: process.pid, nonce: 'live-legacy-page-owner' });
+  await writeFile(leasePath, ownedLease, { mode: 0o600 });
   await eventually(async () => JSON.parse(await readFile(ledgerPath, 'utf8')), value => value.mirror.state === 'synced' && !value.mirror.pending);
   const ledger = await readFile(ledgerPath, 'utf8');
   const duplicate = f.create(); await duplicate.start();

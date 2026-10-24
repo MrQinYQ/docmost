@@ -54,3 +54,16 @@ test('unbinding and rebinding the same page retain every inactive server task fe
   assert.ok(archived.every(item => item.value.active === false));
   assert.equal((await store.load()).length, 0);
 });
+
+test('read-only snapshots tolerate concurrent atomic record replacement without losing private-file checks', async t => {
+  const { store, path } = await fixture(t); await store.save({ bindingId, counter: 0 });
+  await Promise.all([
+    (async () => { for (let counter = 1; counter <= 40; counter++) await store.save({ bindingId, counter }); })(),
+    (async () => { for (let i = 0; i < 100; i++) {
+      const rows = await store.load({ snapshot: true });
+      assert.equal(rows.length, 1); assert.ok(Number.isInteger(rows[0].value.counter));
+    } })(),
+  ]);
+  await chmod(join(path, 'bindings', bindingId + '.json'), 0o644);
+  await assert.rejects(store.load({ snapshot: true }), { code: 'INVALID_STATE' });
+});

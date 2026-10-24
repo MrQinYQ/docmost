@@ -89,7 +89,7 @@ node /absolute/path/docmost-mcp-source/packages/mcp/dist/index.mjs --check-knowl
 | `get_page_knowledge_status` 尚未登记 | 报告未登记；查询本身不等于登记或外发授权。 |
 | `get_page_knowledge_status` 返回 `retrying` / `blocked` | 展示安全错误，网络问题等待或补处理；配置、身份、外部写入冲突和提交不确定须先排查。 |
 | 同一页面再次更新正文返回 `SAVE_PENDING` | 上一次正文保存尚未确认；本次没有派发 Docmost 更新。先等待并读取确认上一版已保存，再执行这次尚未派发的修改，不重放上一笔成功写入。 |
-| 页面返回 `LEASE_BUSY` | 同一账本已有 MCP 进程拥有该页。先协调占用进程正常退出，再重连当前连接；不删除活跃锁、不更换账本绕过，不重复创建页面或改用 `ov` CLI。 |
+| 页面返回 `LEASE_BUSY` | 同一账本的另一次有限操作仍在进行，或旧版连接持有页面锁。先等待再重试；旧版连接正常重连一次。新版操作结束即释放，已确认退出的持有者可自动回收。不删活锁、不换账本、不重复创建或改用 `ov` CLI。 |
 | `retry_knowledge_sync` 未知关联、目标变化或无法确认旧任务 | 报告实际错误，先对账，不删账本、不构造新 URI，也不重放 Docmost。 |
 | 当前连接只读或工具缺失 | 只查询状态；用户授权可写连接后合并配置并重启，不用 CLI 绕过。 |
 

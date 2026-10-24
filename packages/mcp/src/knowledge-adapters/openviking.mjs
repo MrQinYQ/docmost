@@ -35,7 +35,7 @@ function createRuntime(connection, context) {
   const signal = context.signal ?? new AbortController().signal;
   const client = context.client ?? createOpenVikingClient(connection);
   const mirror = createMirror({ ...config, openViking: connection }, { client, post, store, persist, signal, deletionReady });
-  const tree = createMirrorTree({ config: { ...connection, readOnly: config.readOnly }, client, store, persist, signal });
+  const tree = createMirrorTree({ config: { ...connection, readOnly: config.readOnly }, client, store, persist, signal, acquireLease: context.acquireLease });
   return {
     mirror,
     tree,

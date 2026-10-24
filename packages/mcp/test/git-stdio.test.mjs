@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { spawn, execFileSync } from 'node:child_process';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
+import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { fixture, pageId, spaceId } from './git-fixture.mjs';
 
@@ -45,8 +46,14 @@ async function connect(t, options = {}) {
   });
   t.after(async () => {
     if (child.exitCode === null && child.signalCode === null) child.stdin.end();
+    let forced = false;
+    if (!await Promise.race([exited.then(() => true), delay(4000, false, { ref: false })])) {
+      forced = true; child.kill('SIGTERM');
+      if (!await Promise.race([exited.then(() => true), delay(3000, false, { ref: false })])) child.kill('SIGKILL');
+    }
     await exited; server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
     for (const pending of requests.values()) clearTimeout(pending.timer);
+    assert.equal(forced, false, 'stdio must release its active work and exit after EOF');
   });
   await call('initialize', { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'git-delivery-test', version: '1' } });
   child.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\n');
@@ -55,10 +62,13 @@ async function connect(t, options = {}) {
     let data; try { data = JSON.parse(result.content[0].text); } catch { data = { validationError: result.content[0].text }; }
     return { result, data };
   };
+  // Schema-rejection cases can finish before eager startup has created its
+  // private directories. Wait for startup before fixture cleanup may run.
+  await tool('get_git_document_status', {});
   return { ...f, child, exited, paths, call, tool, env };
 }
 
-test('real stdio exposes Git tools without MD/knowledge and publishes a committed feature snapshot', async t => {
+test('real stdio exposes Git tools without MD/knowledge and publishes a committed feature snapshot', { timeout: 20000 }, async t => {
   const f = await connect(t); const { tools } = await f.call('tools/list');
   for (const name of ['bind_git_document', 'publish_git_documents', 'get_git_document_status', 'set_git_document_sync', 'resolve_git_document_conflict']) assert.ok(tools.some(tool => tool.name === name), name);
   const bound = await f.tool('bind_git_document', { pageId, filePath: 'document.md', commit: f.first, branch: 'refs/heads/feature' });
@@ -99,8 +109,10 @@ test('invalid commit/path schemas cannot invoke Git publication', async t => {
   assert.equal(result.result.isError, true); assert.equal(f.state.writes, 0);
 });
 
-test('acceptance client uses real stdio and closes its own connection cleanly', async t => {
+test('acceptance client uses real stdio and closes its own connection cleanly', { timeout: 15000 }, async t => {
   const f = await connect(t);
+  await f.tool('get_git_document_status', {});
+  f.child.stdin.end(); await f.exited;
   const { connectMcp } = await import('../scripts/stdio-client.mjs');
   const client = await connectMcp(entry, f.env);
   try {

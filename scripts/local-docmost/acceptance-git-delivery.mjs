@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
-import { chmod, mkdir, mkdtemp, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -170,6 +170,20 @@ try {
       assert.ok(pages[1].content.includes('B-' + report.runId) && !pages[1].content.includes('A-' + report.runId));
       const scoped = await p.rpc.tool('get_git_document_status', { repositoryRoot: p.repo }); assert.deepEqual(scoped.bindings.map(x => x.bindingId), [p.bindingId]);
       report.multiProject = { sameProcess: true, processId: p.rpc.child.pid, sameLedger: true, noConfiguredGitRoot: true, mixedBatchRejectedWithoutWrites: true, otherCommit };
+    });
+    await check('two live stdio processes release finite locks and reuse the newest Git baseline', async () => {
+      const peer = await connect(p.env);
+      try {
+        const before = (await readPage(p.pageId)).content;
+        const reply = await peer.tool('publish_git_documents', args(p, p.a)); assert.equal(reply.documents[0].state, 'synced');
+        assert.equal((await readPage(p.pageId)).content, before);
+        p.a = await commit(p, before + '\nPeer process committed update.\n');
+        const updated = await peer.tool('publish_git_documents', args(p, p.a)); assert.equal(updated.documents[0].state, 'synced');
+        const same = await p.rpc.tool('publish_git_documents', args(p, p.a)); assert.equal(same.documents[0].git.published.commit, p.a); assert.equal(same.documents[0].state, 'synced');
+        assert.equal(peer.child.exitCode, null); assert.equal(p.rpc.child.exitCode, null);
+        assert.deepEqual(await readdir(join(p.state, 'leases')), []); assert.deepEqual(await readdir(join(p.state, 'operations')), []);
+        report.operationLocks = { bothProcessesConnected: true, idlePageLocks: 0, idleOperationTickets: 0, latestBaselineReused: true };
+      } finally { await close(peer); }
     });
     await check('legacy default-root invocation then rootless restart preserves both project bindings', async () => {
       await close(p.rpc);

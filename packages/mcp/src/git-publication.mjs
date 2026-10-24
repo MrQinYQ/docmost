@@ -65,7 +65,7 @@ export function createGitPublication(context) {
           git: { version: 1, commonDir: repo.commonDir, objectFormat: repo.objectFormat, instance: repo.instance, prefix: repo.prefix, published: version(source, input.commit, input.branch, input.filePath) },
           _tail: previous?._tail ?? Promise.resolve() };
         delete binding.errorCode; delete binding.pageRefresh; delete binding.pending;
-        if (!previous) binding._lease = await store.acquire(binding, context.signal);
+        if (!previous) await ensureLease(binding);
         try {
           if (mirror) { await mirror.prepare(binding, source); mirror.confirm(binding, { localHash: source.hash, proposedRevision: remote.revision }); }
           await persist(binding);
@@ -75,7 +75,7 @@ export function createGitPublication(context) {
             Object.assign(previous, binding); records.set(binding.bindingId, previous);
           } else records.set(binding.bindingId, binding);
           return snapshot(records.get(binding.bindingId));
-        } catch (error) { if (!previous) await store.release(binding._lease); throw error; }
+        } catch (error) { throw error; }
       };
       return previous ? enqueue(previous, operation) : operation();
     });
@@ -146,7 +146,10 @@ export function createGitPublication(context) {
     }
     const pushReceipt = input.remote ? await reader.confirmPush(input) : undefined;
     const documents = [];
-    for (const binding of bindings) documents.push(await enqueue(binding, () => publishOne(binding, { ...input, repositoryRoot: root, pushReceipt })));
+    for (const binding of bindings) {
+      try { documents.push(await enqueue(binding, () => publishOne(binding, { ...input, repositoryRoot: root, pushReceipt }))); }
+      catch (error) { await setFailure(binding, error); documents.push(snapshot(binding)); }
+    }
     return { repository: { root, id: gitRepositoryId(repo) }, commit: input.commit, branch: input.branch, documents, ...(pushReceipt ? { pushReceipt } : {}) };
   }
   async function getGitDocumentStatus({ bindingId, repositoryRoot } = {}) {

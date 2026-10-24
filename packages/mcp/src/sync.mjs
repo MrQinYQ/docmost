@@ -10,6 +10,7 @@ import { readPageSource } from './page-source.mjs';
 import { createGitRepositories, gitRepositoryId } from './git-repositories.mjs';
 import { validateGitBinding, confirmedGitBinding } from './git-binding.mjs';
 import { createGitPublication } from './git-publication.mjs';
+import { createSyncWork } from './sync-work.mjs';
 
 const uuid = value => typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 const revision = value => typeof value === 'string' && /^[0-9a-f]{64}$/.test(value);
@@ -28,7 +29,7 @@ const messages = {
   TARGET_CHANGED: 'The bound page, space, workspace, origin or source root changed. This binding will not be retargeted.',
   CONFLICT: 'The live page changed. Read its current revision and explicitly resolve with that revision.',
   UNCONFIRMED: 'An earlier write has an unknown result. Inspect the live page and explicitly resolve; no automatic retry was made.',
-  LEASE_BUSY: 'Another process owns the page lease. Confirm that a stale process has stopped before manually removing its lease file.',
+  LEASE_BUSY: 'Another synchronization operation or older live client owns this page. Wait for completion or reconnect the older client; do not remove active locks.',
   BINDING_EXISTS: 'This source file or page is already bound. Unbind its existing binding before choosing another target.',
   BINDING_LIMIT: 'At most 50 page enrollments and Markdown bindings are allowed in one state directory.',
   SAVE_PENDING: 'The preceding page body update has not been confirmed as saved. Wait for its knowledge-base status or explicitly sync the current saved page before making another body update.',
@@ -103,11 +104,12 @@ export function createMarkdownSync(config, { api, mirrorClient, knowledgeAdapter
   const watchers = new Map();
   const cancellation = new AbortController();
   let store, rootInfo, identity, startPromise, closePromise, interval, mirror, mirrorTree, knowledgeRuntime, gitPublication;
-  let controls = Promise.resolve();
   let state = 'running';
   let startupError;
-  let closed = false;
+  let closed = false, initialized = false;
   const stateDir = config.knowledgeStateDir ?? config.syncStateDir;
+  const work = createSyncWork({ getStore: async () => store ??= await createSyncStore(stateDir, { readOnly: config.readOnly }),
+    refresh: async () => { if (initialized) await loadRecords(true); }, signal: cancellation.signal, readOnly: config.readOnly });
   const repositories = createGitRepositories({ stateDir, signal: cancellation.signal });
   const providerStatus = binding => {
     const result = knowledgeStatus(binding, config, knowledgeAdapters);
@@ -132,10 +134,17 @@ export function createMarkdownSync(config, { api, mirrorClient, knowledgeAdapter
   const summary = () => ({ state, readOnly: Boolean(config.readOnly), knowledgeBase: knowledgeConnectionStatus(config, knowledgeAdapters), bindings: [...records.values()].map(snapshot),
     ...(startupError ? { error: { code: startupError.code, message: startupError.message } } : {}) });
   const serialize = binding => Object.fromEntries(storedFields.filter(key => binding[key] !== undefined).map(key => [key, binding[key]]));
-  const canRun = binding => markdownSource(binding) && !closed && !startupError && state === 'running' && active(binding) && binding._lease && !(knowledgeRuntime?.accepts(binding) && binding.mirror?.operation);
+  const canRun = binding => markdownSource(binding) && !closed && !startupError && state === 'running'
+    && (active(binding) || (binding.enabled && binding.errorCode === 'LEASE_BUSY' && !binding.pending))
+    && (binding._retryAt ?? 0) <= Date.now() && !(knowledgeRuntime?.accepts(binding) && binding.mirror?.operation);
   const persist = async binding => {
+    if (binding._lease) try { await store.assertLease(binding._lease); } catch (error) {
+      if (error.code === 'LEASE_BUSY') binding._lease = undefined;
+      throw error;
+    }
     const value = serialize(binding);
     await store.save(value);
+    delete binding._localFailure;
     if (value.mirror || gitSource(value)) {
       const retained = [value.mirror?.pending?.hash, value.mirror?.next?.hash, value.pending?.localHash, value.git?.intent?.hash].filter(Boolean);
       await store.pruneSnapshots(value.bindingId, retained);
@@ -145,11 +154,16 @@ export function createMarkdownSync(config, { api, mirrorClient, knowledgeAdapter
   const requireWritable = () => { requireRunning(); if (config.readOnly) throw errorFor('READ_ONLY'); };
   const lookup = bindingId => { if (!uuid(bindingId)) throw errorFor('INVALID_REQUEST'); const binding = records.get(bindingId); if (!binding) throw errorFor('NOT_FOUND'); return binding; };
   const enqueue = (binding, operation) => {
-    const result = binding._tail.then(operation);
+    const result = work.run(async () => {
+      // Refresh may have retired this captured callback while it waited for
+      // another process. Never recreate its ledger record or remote content.
+      if (records.get(binding.bindingId) !== binding) return;
+      await ensureLease(binding); return operation();
+    });
     binding._tail = result.catch(() => {});
     return result;
   };
-  const controlQueue = operation => { const result = controls.then(operation); controls = result.catch(() => {}); return result; };
+  const controlQueue = operation => operation();
   async function post(path, body, mutation = false) {
     if (cancellation.signal.aborted) throw errorFor('CANCELLED');
     try { return await api.post(path, body, cancellation.signal, mutation); }
@@ -162,11 +176,13 @@ export function createMarkdownSync(config, { api, mirrorClient, knowledgeAdapter
   }
   async function ensureLease(binding) {
     try {
-      if (!binding._lease) throw errorFor('LEASE_BUSY');
-      await store.assertLease(binding._lease);
+      await work.acquire(binding);
     }
     catch (error) {
-      if (error.code === 'LEASE_BUSY') { binding._lease = undefined; binding.state = 'blocked'; binding.errorCode = 'LEASE_BUSY'; }
+      if (error.code === 'LEASE_BUSY') {
+        binding._lease = undefined; binding.state = 'blocked'; binding.errorCode = 'LEASE_BUSY';
+        binding._localFailure = { state: binding.state, errorCode: binding.errorCode };
+      }
       throw error;
     }
   }
@@ -189,6 +205,7 @@ export function createMarkdownSync(config, { api, mirrorClient, knowledgeAdapter
     binding.state = ['CONFLICT', 'GIT_BRANCH_CONFLICT'].includes(code) ? 'conflict' : pending && !blocked ? 'unconfirmed' : 'blocked';
     binding.errorCode = pending && !['CONFLICT', 'GIT_BRANCH_CONFLICT'].includes(code) && !blocked ? 'UNCONFIRMED' : code;
     if (binding._lease && !config.readOnly) await persist(binding);
+    else binding._localFailure = { state: binding.state, errorCode: binding.errorCode };
   }
   async function commit(binding) {
     const pending = binding.pending;
@@ -263,10 +280,17 @@ export function createMarkdownSync(config, { api, mirrorClient, knowledgeAdapter
   function schedule(binding) {
     if (!canRun(binding)) return;
     clearTimeout(binding._timer);
-    binding._timer = setTimeout(() => {
+    binding._timer = work.detach(() => setTimeout(() => {
       binding._timer = undefined;
-      enqueue(binding, () => processBinding(binding)).catch(error => { startupError = safeError(error); state = 'blocked'; });
-    }, debounceMs);
+      enqueue(binding, () => processBinding(binding)).catch(error => {
+        if (closed) return;
+        if (error.code === 'LEASE_BUSY') {
+          binding._observed = undefined; binding._retryAt = Date.now() + Math.max(scanMs, 250);
+          binding.state = 'blocked'; binding.errorCode = 'LEASE_BUSY';
+          binding._localFailure = { state: binding.state, errorCode: binding.errorCode };
+        } else { startupError = safeError(error); state = 'blocked'; }
+      });
+    }, debounceMs));
     binding._timer.unref();
   }
   async function scanBinding(binding) {
@@ -288,12 +312,12 @@ export function createMarkdownSync(config, { api, mirrorClient, knowledgeAdapter
     const parent = dirname(join(config.syncRoot, binding.filePath));
     if (watchers.has(parent)) return;
     try {
-      const watcher = watch(parent, { persistent: false }, (event, filename) => {
+      const watcher = work.detach(() => watch(parent, { persistent: false }, (event, filename) => {
         for (const record of records.values()) {
           if (!markdownSource(record)) continue;
           if (dirname(join(config.syncRoot, record.filePath)) === parent && (!filename || basename(record.filePath) === String(filename))) scanBinding(record).catch(() => {});
         }
-      });
+      }));
       watcher.on('error', () => { watcher.close(); watchers.delete(parent); });
       watchers.set(parent, watcher);
     } catch { /* Periodic bounded scans still detect saves when native watches fail. */ }
@@ -302,7 +326,7 @@ export function createMarkdownSync(config, { api, mirrorClient, knowledgeAdapter
     try {
       if (binding.origin !== config.origin || (markdownSource(binding) && binding.root !== config.syncRoot)) throw errorFor('TARGET_CHANGED');
       if (binding.userId !== identity.userId || binding.workspaceId !== identity.workspaceId) throw errorFor('IDENTITY_CHANGED');
-      binding._lease = await store.acquire(binding, cancellation.signal);
+      await ensureLease(binding);
       if (closed) return;
       if (pageSource(binding)) return;
       if (gitSource(binding)) {
@@ -335,33 +359,26 @@ export function createMarkdownSync(config, { api, mirrorClient, knowledgeAdapter
         rootInfo = await absoluteDirectory(config.syncRoot, 'INVALID_SOURCE');
         if (contained(config.syncRoot, stateDir) || contained(stateDir, config.syncRoot)) throw errorFor('INVALID_STATE');
       }
-      store = await createSyncStore(stateDir, { readOnly: config.readOnly });
+      store ??= await createSyncStore(stateDir, { readOnly: config.readOnly });
       knowledgeRuntime = createKnowledgeRuntime(config, { adapters: knowledgeAdapters, client: mirrorClient, post, store, persist, signal: cancellation.signal,
+        acquireLease: async key => { const holder = { ...key }; await ensureLease(holder); return holder._lease; },
         deletionReady: (binding, job) => !job.waitFor?.some(id => {
           const child = records.get(id);
           return child && id !== binding.bindingId && (child.mirror?.operation?.kind === 'delete'
             || child.mirror?.pending?.kind === 'delete' || child.mirror?.next?.kind === 'delete');
         }) });
       mirror = knowledgeRuntime?.mirror; mirrorTree = knowledgeRuntime?.tree;
-      const loaded = await store.load();
-      const seenPages = new Set(), seenFiles = new Set();
-      for (const item of loaded) {
-        const binding = validateStored(item, knowledgeAdapters);
-        const fileKey = binding.filePath && sourceFileKey(binding.root, binding.filePath);
-        if (seenPages.has(binding.pageId) || (fileKey && seenFiles.has(fileKey))) throw errorFor('INVALID_STATE');
-        seenPages.add(binding.pageId); if (fileKey) seenFiles.add(fileKey);
-        if (!config.syncRoot && markdownSource(binding)) { dormantPages.add(binding.pageId); if (fileKey) dormantFiles.add(fileKey); continue; }
-        if (records.has(binding.bindingId)) throw errorFor('INVALID_STATE');
-        records.set(binding.bindingId, binding);
-      }
+      await loadRecords();
+      initialized = true;
       if (closed || config.readOnly) return summary();
       identity = identityOf(await post('users/me', {}));
       if (closed) return summary();
       for (const binding of records.values()) { if (closed) break; await initializeBinding(binding); }
       if (!closed) {
-        interval = setInterval(() => { for (const binding of records.values()) {
+        interval = work.detach(() => setInterval(() => { for (const binding of records.values()) {
           scanBinding(binding).catch(() => {});
-          if (mirror && knowledgeRuntime.accepts(binding) && binding._lease && !binding._mirrorQueued && !closed) {
+          if (mirror && knowledgeRuntime.accepts(binding) && !binding._mirrorQueued && !closed
+            && (binding.pageRefresh || binding.mirror?.operation || ((binding.mirror?.pending || binding.mirror?.next) && mirror.canProcess(binding)))) {
             binding._mirrorQueued = true;
             enqueue(binding, async () => {
               await ensureLease(binding);
@@ -371,16 +388,42 @@ export function createMarkdownSync(config, { api, mirrorClient, knowledgeAdapter
               }
               if (!binding.pageRefresh && mirror.canProcess(binding)) await mirrorTree.run(binding, () => mirror.process(binding));
             })
-              .catch(error => { startupError = safeError(error); state = 'blocked'; })
+              .catch(error => { if (!closed && error.code !== 'LEASE_BUSY') { startupError = safeError(error); state = 'blocked'; } })
               .finally(() => { binding._mirrorQueued = false; });
           }
-        } }, scanMs);
+        } }, scanMs));
         interval.unref();
       }
     } catch (error) { if (!closed) { startupError = safeError(error); state = 'blocked'; } }
     return summary();
   }
-  function start() { return startPromise ??= initialize(); }
+  async function loadRecords(writing = false) {
+      const loaded = await store.load({ snapshot: !writing }), retained = new Set();
+      dormantPages.clear(); dormantFiles.clear();
+      const seenPages = new Set(), seenFiles = new Set();
+      for (const item of loaded) {
+        const binding = validateStored(item, knowledgeAdapters);
+        if (binding.origin !== config.origin || (markdownSource(binding) && binding.root !== config.syncRoot)) {
+          binding.state = 'blocked'; binding.errorCode = 'TARGET_CHANGED';
+        } else if (identity && (binding.userId !== identity.userId || binding.workspaceId !== identity.workspaceId)) {
+          binding.state = 'blocked'; binding.errorCode = 'IDENTITY_CHANGED';
+        }
+        const fileKey = binding.filePath && sourceFileKey(binding.root, binding.filePath);
+        if (seenPages.has(binding.pageId) || (fileKey && seenFiles.has(fileKey))) throw errorFor('INVALID_STATE');
+        seenPages.add(binding.pageId); if (fileKey) seenFiles.add(fileKey);
+        if (!config.syncRoot && markdownSource(binding)) { dormantPages.add(binding.pageId); if (fileKey) dormantFiles.add(fileKey); continue; }
+        const previous = records.get(binding.bindingId);
+        if (previous) {
+          for (const key of storedFields) delete previous[key];
+          Object.assign(previous, binding, { _tail: previous._tail, _timer: previous._timer, _observed: previous._observed });
+          if (writing) delete previous._localFailure;
+          else if (previous._localFailure) Object.assign(previous, previous._localFailure);
+        } else { records.set(binding.bindingId, binding); addWatcher(binding); }
+        retained.add(binding.bindingId);
+      }
+      for (const [id, binding] of records) if (!retained.has(id)) { clearTimeout(binding._timer); records.delete(id); }
+  }
+  function start() { return startPromise ??= work.run(initialize).catch(error => { startupError = safeError(error); state = 'blocked'; return summary(); }); }
   async function status({ bindingId } = {}) {
     await start();
     if (bindingId === undefined) return summary();
@@ -409,7 +452,7 @@ export function createMarkdownSync(config, { api, mirrorClient, knowledgeAdapter
         workspaceId: current.workspaceId, userId: current.userId, origin: config.origin, root: config.syncRoot,
         enabled, state: enabled ? 'watching' : 'paused', localHash: source.hash, remoteRevision: remote.revision,
         _tail: Promise.resolve(), _observed: source.hash };
-      binding._lease = await store.acquire(binding, cancellation.signal);
+      await ensureLease(binding);
       try {
         requireWritable();
         if (mirror) {
@@ -425,7 +468,7 @@ export function createMarkdownSync(config, { api, mirrorClient, knowledgeAdapter
         records.set(binding.bindingId, binding);
         addWatcher(binding);
         return snapshot(binding);
-      } catch (error) { await store.release(binding._lease); throw safeError(error); }
+      } catch (error) { throw safeError(error); }
     });
   }
   async function control({ bindingId, action }, { allowGit = false } = {}) {
@@ -442,19 +485,15 @@ export function createMarkdownSync(config, { api, mirrorClient, knowledgeAdapter
         if (action === 'unbind') {
           // Explicit metadata removal can clean up a pinned old identity/root.
           // It only needs exclusive ownership of that old local target lease.
-          if (!binding._lease) binding._lease = await store.acquire(binding, cancellation.signal);
           await ensureLease(binding);
           await store.archiveMirror(binding);
           await store.remove(binding.bindingId);
           for (const job of [binding.mirror?.pending, binding.mirror?.next].filter(Boolean)) {
             if (job.kind === 'body') await store.removeSnapshot(binding.bindingId, job.hash);
           }
-          await store.release(binding._lease);
-          binding._lease = undefined;
           records.delete(binding.bindingId);
           return { ...snapshot(binding), state: 'unbound' };
         }
-        if (!binding._lease) throw errorFor('LEASE_BUSY');
         await ensureLease(binding);
         if (action === 'pause') { if (!binding.errorCode) binding.state = 'paused'; await persist(binding); return snapshot(binding); }
         if (binding.pending || ['CONFLICT', 'UNCONFIRMED', 'IDENTITY_CHANGED', 'TARGET_CHANGED'].includes(binding.errorCode)) return snapshot(binding);
@@ -479,7 +518,6 @@ export function createMarkdownSync(config, { api, mirrorClient, knowledgeAdapter
       clearTimeout(binding._timer);
       return enqueue(binding, async () => {
         requireWritable();
-        if (!binding._lease) throw errorFor('LEASE_BUSY');
         await ensureLease(binding);
         try {
           const source = await readConfirmedSource(binding);
@@ -507,21 +545,8 @@ export function createMarkdownSync(config, { api, mirrorClient, knowledgeAdapter
     watchers.clear();
     closePromise = (async () => {
       await startPromise;
-      await controls;
-      await Promise.all([...records.values()].map(binding => binding._tail));
+      await work.idle();
       try { await mirrorTree?.close(); } catch (error) { startupError = safeError(error); }
-      for (const binding of records.values()) {
-        if (binding._lease) {
-          const lease = binding._lease;
-          try { await ensureLease(binding); await persist(binding); }
-          catch (error) { startupError = safeError(error); }
-          finally {
-            try { await store.release(lease); }
-            catch (error) { startupError = safeError(error); }
-          }
-          binding._lease = undefined;
-        }
-      }
       return summary();
     })();
     return closePromise;
@@ -529,7 +554,6 @@ export function createMarkdownSync(config, { api, mirrorClient, knowledgeAdapter
   async function retryMirror({ bindingId }) {
     await start(); requireWritable();
     const binding = lookup(bindingId);
-    if (!binding._lease) throw errorFor('INVALID_REQUEST');
     if (!mirror || !knowledgeRuntime.accepts(binding)) {
       const status = providerStatus(binding);
       if (status) return status;
@@ -570,7 +594,7 @@ export function createMarkdownSync(config, { api, mirrorClient, knowledgeAdapter
     return controlQueue(async () => {
       const captured = [];
       for (const binding of records.values()) {
-        if (!binding._lease || !knowledgeRuntime?.accepts(binding)) continue;
+        if (!knowledgeRuntime?.accepts(binding)) continue;
         await enqueue(binding, async () => {
           try {
             await ensureLease(binding); await checkIdentity(binding);
@@ -650,7 +674,7 @@ export function createMarkdownSync(config, { api, mirrorClient, knowledgeAdapter
     await start(); if (!mirror || config.readOnly || closed) return;
     const results = [];
     for (const binding of records.values()) {
-      if (pageSource(binding) || !binding._lease || !knowledgeRuntime?.accepts(binding)) continue;
+      if (pageSource(binding) || !knowledgeRuntime?.accepts(binding)) continue;
       await enqueue(binding, async () => {
         try {
           await ensureLease(binding);
@@ -715,13 +739,13 @@ export function createMarkdownSync(config, { api, mirrorClient, knowledgeAdapter
         enabled: true, state: 'watching', _tail: Promise.resolve() };
       const source = await readPageSource(binding, post, { allowSpaceChange: true });
       binding.spaceId = source.spaceId; binding.localHash = source.hash; binding.remoteRevision = source.hash;
-      binding._lease = await store.acquire(binding, cancellation.signal);
+      await ensureLease(binding);
       try {
         requireWritable();
         await updatePageSource(binding);
         records.set(binding.bindingId, binding);
         return snapshot(binding);
-      } catch (error) { await store.release(binding._lease); throw safeError(error); }
+      } catch (error) { throw safeError(error); }
     });
   }
   async function pageStatus({ pageId } = {}) {
@@ -773,7 +797,7 @@ export function createMarkdownSync(config, { api, mirrorClient, knowledgeAdapter
     pageId = pageId?.toLowerCase();
     const results = [];
     for (const binding of records.values()) {
-      if (!pageSource(binding) || !binding.enabled || deletingPage(binding) || !binding._lease || !knowledgeRuntime.accepts(binding)) continue;
+      if (!pageSource(binding) || !binding.enabled || deletingPage(binding) || !knowledgeRuntime.accepts(binding)) continue;
       if (pageId && binding.pageId !== pageId && !includeDescendants) continue;
       await enqueue(binding, async () => {
         if (binding.pageId === pageId && refreshTicketId !== undefined && binding.pageRefresh?.id !== refreshTicketId) return;
@@ -803,9 +827,23 @@ export function createMarkdownSync(config, { api, mirrorClient, knowledgeAdapter
       sourceTaken, dormantPage: id => dormantPages.has(id), signal: cancellation.signal });
     return gitPublication[name](input ?? {});
   };
-  return { start, close, bind, status, control, resolve, retryMirror, retryKnowledge: retryMirror,
-    bindGitDocument: gitMethod('bindGitDocument'), publishGitDocuments: gitMethod('publishGitDocuments'), getGitDocumentStatus: gitMethod('getGitDocumentStatus'),
-    setGitDocumentSync: gitMethod('setGitDocumentSync'), resolveGitDocumentConflict: gitMethod('resolveGitDocumentConflict'),
-    beforePageOperation, afterPageOperation, refreshMirrorLayouts,
-    syncPage, pageStatus, refreshPageMirrors, capturePageUpdate, cancelPageUpdate };
+  const scoped = fn => async (...args) => { await start(); return work.run(() => fn(...args)); };
+  const pauseAware = fn => async input => {
+    // A local pause request can stop the next undispatched stage of current
+    // work; its durable update still waits for the same operation boundary.
+    if (!config.readOnly && !closed && input?.action === 'pause') {
+      const binding = records.get(input.bindingId); if (binding) binding.enabled = false;
+    }
+    return scoped(fn)(input);
+  };
+  const observe = fn => async (...args) => { await start(); if (work.busy()) return fn(...args); return work.read(async () => {
+    if (!closed && !startupError) try { await loadRecords(); } catch (error) { startupError = safeError(error); state = 'blocked'; }
+    return fn(...args);
+  }); };
+  return { start, close, runOperation: scoped(operation => operation()),
+    bind: scoped(bind), status: observe(status), control: pauseAware(control), resolve: scoped(resolve), retryMirror: scoped(retryMirror), retryKnowledge: scoped(retryMirror),
+    bindGitDocument: scoped(gitMethod('bindGitDocument')), publishGitDocuments: scoped(gitMethod('publishGitDocuments')), getGitDocumentStatus: observe(gitMethod('getGitDocumentStatus')),
+    setGitDocumentSync: pauseAware(gitMethod('setGitDocumentSync')), resolveGitDocumentConflict: scoped(gitMethod('resolveGitDocumentConflict')),
+    beforePageOperation: scoped(beforePageOperation), afterPageOperation: scoped(afterPageOperation), refreshMirrorLayouts: scoped(refreshMirrorLayouts),
+    syncPage: scoped(syncPage), pageStatus: observe(pageStatus), refreshPageMirrors: scoped(refreshPageMirrors), capturePageUpdate: scoped(capturePageUpdate), cancelPageUpdate: scoped(cancelPageUpdate) };
 }

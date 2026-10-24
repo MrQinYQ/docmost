@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtemp, mkdir, realpath, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, realpath, rename, rm, writeFile, readdir } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -522,17 +522,17 @@ test('configured read-only stdio adds status only and cannot watch or upload sav
   assert.equal(fixture.updates().length, 0);
 });
 
-test('a second process sharing state reports a busy page lease and cannot duplicate an upload', { timeout: 10000 }, async t => {
-  const { rpc, fixture, filePath, start } = await harness(t);
+test('two connected watcher processes coordinate one save and keep no idle page lease', { timeout: 10000 }, async t => {
+  const { rpc, fixture, filePath, stateDir, start } = await harness(t);
   const binding = await bind(rpc);
   const duplicate = await start();
-  await eventually(async () => (await status(duplicate, binding.bindingId)).error?.code === 'LEASE_BUSY',
-    'second process must report the live owner lease');
-  await writeFile(filePath, '# Only the lease owner uploads\n');
-  await eventually(() => fixture.content === '# Only the lease owner uploads\n', 'lease owner did not upload');
+  assert.equal((await status(duplicate, binding.bindingId)).error, undefined);
+  await writeFile(filePath, '# Shared watcher save\n');
+  await eventually(() => fixture.content === '# Shared watcher save\n', 'coordinated watchers did not upload');
   await delay(1300);
-  assert.equal(fixture.updates().length, 1, 'only one process can send the same page replacement');
-  assert.equal((await status(duplicate, binding.bindingId)).error?.code, 'LEASE_BUSY');
+  assert.equal(fixture.updates().length, 1, 'one save must produce exactly one page replacement');
+  assert.equal((await status(duplicate, binding.bindingId)).error, undefined);
+  assert.deepEqual(await readdir(join(stateDir, 'leases')), []);
 });
 
 test('stdin EOF and SIGTERM stop the configured watcher and exit within three seconds', { timeout: 16000 }, async t => {

@@ -12,7 +12,7 @@ const safeCode = error => error?.code === 'LEASE_BUSY' ? 'OV_TREE_BUSY'
  * The filesystem lease only coordinates users of this private state directory;
  * unrelated OpenViking writers still require normal conflict reconciliation.
  */
-export function createMirrorTree({ config, client, store, persist, signal }) {
+export function createMirrorTree({ config, client, store, persist, signal, acquireLease }) {
   const cancellation = new AbortController();
   const effective = signal ? AbortSignal.any([signal, cancellation.signal]) : cancellation.signal;
   let owner, inFlight, closed = false, closing;
@@ -97,7 +97,8 @@ export function createMirrorTree({ config, client, store, persist, signal }) {
         await releaseOwner();
       }
       if (!owner) {
-        const lease = await store.acquire({ origin: `openviking:${target.origin}`, workspaceId: target.accountId, pageId: target.rootUri }, effective);
+        const key = { origin: `openviking:${target.origin}`, workspaceId: target.accountId, pageId: target.rootUri };
+        const lease = acquireLease ? await acquireLease(key) : await store.acquire(key, effective);
         owner = { bindingId: binding.bindingId, binding, target, lease };
         // The previous process may have released its local lease while an
         // asynchronous server task was still running. Re-read disk metadata,
@@ -121,7 +122,9 @@ export function createMirrorTree({ config, client, store, persist, signal }) {
       return mirrorStatus(binding);
     } finally {
       try {
-        if (owner && (stopped() || !await holdsServerWork(owner))) await releaseOwner();
+        // Remote tasks retain their durable ledger fence, not local process
+        // ownership. Every finite polling/dispatch operation releases its lock.
+        await releaseOwner();
       } finally { finished(); inFlight = undefined; }
     }
   }

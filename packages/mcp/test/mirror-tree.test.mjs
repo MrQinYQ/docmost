@@ -52,7 +52,7 @@ run('parent and child bindings cannot overlap server-side index tasks in one mir
   assert.equal(aWork, 1); assert.equal(bWork, 0);
   assert.equal(f.b.mirror.state, 'retrying'); assert.equal(f.b.mirror.errorCode, 'OV_TREE_BUSY');
   assert.equal(f.b.state, 'synced', 'Docmost result remains independent');
-  assert.equal((await f.leases()).length, 1);
+  assert.equal((await f.leases()).length, 0);
   f.taskData.get('parent-task').status = 'completed';
   await gate.run(f.b, async () => { bWork++; delete f.b.mirror.pending; await f.store.save(f.b); });
   assert.equal(bWork, 1);
@@ -68,7 +68,7 @@ run('two gate instances use one shared namespace lease rather than overlapping w
   let called = false;
   await second.run(f.b, async () => { called = true; });
   assert.equal(called, false); assert.equal(f.b.mirror.errorCode, 'OV_TREE_BUSY');
-  assert.equal((await f.leases()).length, 1);
+  assert.equal((await f.leases()).length, 0);
 });
 
 run('fresh disk metadata fences a still-running server task after its original process releases the lease', async t => {

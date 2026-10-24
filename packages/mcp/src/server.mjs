@@ -147,7 +147,9 @@ export function createDocmostServer(config, { fetchImpl, syncManager } = {}) {
       },
     }, async (input, context) => {
       try {
-        const value = await run(input, (path, body) => api.post(path, body, context.mcpReq.signal, !readOnly));
+        const operation = () => run(input, (path, body) => api.post(path, body, context.mcpReq.signal, !readOnly));
+        const scopedHooks = !readOnly && ['update_page', 'update_space', 'move_page', 'move_page_to_space', 'delete_page', 'restore_page'].includes(name);
+        const value = await (scopedHooks && syncManager?.runOperation ? syncManager.runOperation(operation) : operation());
         const text = api.redact(JSON.stringify(value));
         if (Buffer.byteLength(text) > 2 * 1024 * 1024)
           throw new ApiError('RESPONSE_TOO_LARGE', 'Tool result exceeds 2 MiB; request fewer items or less content.');

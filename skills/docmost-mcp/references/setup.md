@@ -204,3 +204,5 @@ node /absolute/path/docmost-mcp-source/packages/mcp/dist/index.mjs --check-knowl
 早期 Git 记录缺少目录实例指纹时，状态为 GIT_IDENTITY_UNCONFIRMED，保留 bindingId/page/pending，不静默信任同路径 clone。Agent 说明原路径、页面和待处理状态，用户明确确认可信原仓库后才调用 set_git_document_sync 的 confirm-repository（传检测到的 repositoryRoot）。工具核对已确认 blob/hash、保存原路径前缀和 dev/ino/birthtime 指纹并对账，不上传正文。原路径/历史不可核对时保留暂停；不重建关联、不改 JSON。普通 resume/retry 无法代替首次确认。新版本已保存指纹的关联自动恢复，无需此步骤。
 
 从同版本仓库的 `skills/git-delivery` 安装到 `~/.codex/skills/git-delivery`，保留既有 Skill 并在替换前备份。重建 MCP 并重启连接，实际发现五个 Git 扩展工具；先查询状态，再明确转换原来源。配置不自动绑定、上传或安装 hook。中文引导见 `docs/git-delivery.md`。没有知识库时选择 provider=none；选 OpenViking 时沿用上文地址、私有 Key 文件和个人/共享向导。
+
+升级操作锁版本时保留原账本和关联；正常重连仍运行旧代码的 MCP 连接一次，使其释放旧版生命周期锁。新版工作结束即释放，不要求每次任务后关闭客户端或启动 daemon。不要用另一个写实例做只读安装检查；优先实际连接的只读工具或按引导使用只读模式。
