@@ -42,7 +42,7 @@ export function loadConnectionConfig(env = process.env, { requireDefaultSpace = 
   let syncStateDir = env.DOCMOST_SYNC_STATE_DIR?.trim() || undefined;
   if (syncStateDir && !isAbsolute(syncStateDir))
     throw new ConfigError('DOCMOST_SYNC_STATE_DIR must be an absolute private state directory.');
-  if ((syncRoot && !syncStateDir) || (!syncRoot && syncStateDir && !gitRoot))
+  if (syncRoot && !syncStateDir)
     throw new ConfigError('Set both DOCMOST_SYNC_ROOT and DOCMOST_SYNC_STATE_DIR to enable Markdown synchronization.');
   if (syncRoot) {
     if (!isAbsolute(syncRoot) || !isAbsolute(syncStateDir))

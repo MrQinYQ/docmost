@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, writeFile, readFile, utimes, rm, copyFile, mkdir } from 'node:fs/promises';
+import { mkdtemp, writeFile, readFile, utimes, rm, copyFile, mkdir, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -26,4 +26,16 @@ test('standalone delivery inspection reports staged/untracked/deleted documents 
   assert.equal(/Secret original|Never expose|Other private/.test(stdout), false);
   assert.deepEqual(await readFile(join(repo, '.git', 'index')), indexBefore, 'read-only inspection must not refresh the Git index');
   assert.equal(git('status', '--porcelain=v1'), before);
+  const nested = join(repo, 'docs', 'nested'); await mkdir(nested, { recursive: true });
+  const detected = JSON.parse(execFileSync(process.execPath, [helper], { cwd: nested, encoding: 'utf8', env: { ...process.env, GIT_DIR: join(temp, 'not-the-project') } }));
+  assert.equal(detected.root, await realpath(repo)); assert.equal(detected.branch, 'refs/heads/feature');
+  const hinted = JSON.parse(execFileSync(process.execPath, [helper, '--repo', nested], { cwd: temp, encoding: 'utf8' })); assert.equal(hinted.root, detected.root);
+});
+
+test('automatic project inspection reports an unborn repository without requiring a first commit', async t => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'git-delivery-unborn-'))); t.after(() => rm(root, { recursive: true, force: true }));
+  execFileSync('git', ['init', '-q', '-b', 'feature'], { cwd: root }); await writeFile(join(root, 'first.md'), '# First document');
+  const helper = fileURLToPath(new URL('../../../skills/git-delivery/scripts/inspect-git.mjs', import.meta.url));
+  const result = JSON.parse(execFileSync(process.execPath, [helper], { cwd: root, encoding: 'utf8' }));
+  assert.equal(result.root, root); assert.equal(result.head, null); assert.deepEqual(result.commits, []); assert.deepEqual(result.changes.untracked, ['first.md']);
 });

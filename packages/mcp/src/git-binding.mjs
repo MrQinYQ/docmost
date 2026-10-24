@@ -13,8 +13,11 @@ const branch = value => typeof value === 'string' && value.startsWith('refs/head
 export function validateGitBinding(binding) {
   const value = binding.git;
   if (!record(value) || value.version !== 1 || !['sha1', 'sha256'].includes(value.objectFormat)
-    || Object.keys(value).some(key => !['version', 'commonDir', 'objectFormat', 'published', 'lastChecked', 'intent', 'pushReceipt'].includes(key))
+    || Object.keys(value).some(key => !['version', 'commonDir', 'objectFormat', 'instance', 'prefix', 'published', 'lastChecked', 'intent', 'pushReceipt'].includes(key))
     || typeof value.commonDir !== 'string' || value.commonDir.length > 4096 || !isAbsolute(value.commonDir) || resolve(value.commonDir) !== value.commonDir) throw invalid();
+  if ((value.instance !== undefined || value.prefix !== undefined)
+    && (!hash(value.instance) || typeof value.prefix !== 'string'
+      || (value.prefix !== '' && (!value.prefix.endsWith('/') || !validRelativeFile(value.prefix + 'document.md'))))) throw invalid();
   const length = value.objectFormat === 'sha256' ? 64 : 40;
   const oid = value => typeof value === 'string' && value.length === length && /^[0-9a-f]+$/.test(value);
   const snapshot = value => (exact(value, 'commit,blob,branch,hash') || exact(value, 'commit,blob,branch,hash,filePath'))

@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { realpath } from 'node:fs/promises';
+import { lstat, realpath } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { ApiError } from './errors.mjs';
 import { absoluteDirectory, sameFile, digest, validRelativeFile } from './sync-files.mjs';
@@ -38,6 +38,11 @@ export async function openGitSource(root, { signal } = {}) {
   if (commonResult.code || formatResult.code || !['sha1', 'sha256'].includes(formatResult.text.trim())) throw fail('INVALID_SOURCE');
   const commonDir = resolve(commonResult.text.trim());
   const commonInfo = await absoluteDirectory(commonDir, 'INVALID_SOURCE');
+  const commonStat = await lstat(commonDir, { bigint: true });
+  const instance = digest(JSON.stringify([commonStat.dev.toString(), commonStat.ino.toString(), commonStat.birthtimeNs.toString()]));
+  const prefixResult = await run(['rev-parse', '--show-prefix']);
+  const prefix = prefixResult.text.trimEnd();
+  if (prefixResult.code || (prefix && (!prefix.endsWith('/') || !validRelativeFile(prefix + 'document.md')))) throw fail('INVALID_SOURCE');
   const objectFormat = formatResult.text.trim();
   const length = objectFormat === 'sha256' ? 64 : 40;
   async function verify() {
@@ -75,7 +80,7 @@ export async function openGitSource(root, { signal } = {}) {
     return { kind: 'body', commit, blob, content, hash: digest(raw.bytes) };
   }
   return {
-    async identity() { await verify(); return { root, commonDir, objectFormat }; },
+    async identity() { await verify(); return { root, commonDir, objectFormat, instance, prefix }; },
     async resolveCommit({ commit, branch }) {
       await verify(); await requireCommit(commit); await requireBranch(branch);
       const current = await run(['rev-parse', '--verify', branch]);

@@ -19,7 +19,14 @@ test('Git roots and all private state directories are validated without weakenin
     { DOCMOST_GIT_ROOT: '/private/tmp/repo', DOCMOST_KNOWLEDGE_STATE_DIR: '/private/tmp/repo/state' },
     { DOCMOST_GIT_ROOT: '/private/tmp/repo', DOCMOST_KNOWLEDGE_STATE_DIR: '/private/tmp' },
     { DOCMOST_GIT_ROOT: '/private/tmp/repo', DOCMOST_SYNC_STATE_DIR: '/private/tmp/state1', DOCMOST_KNOWLEDGE_STATE_DIR: '/private/tmp/state2' },
-    { DOCMOST_SYNC_STATE_DIR: '/private/tmp/state' },
+    { DOCMOST_SYNC_ROOT: '/private/tmp/source' },
     { DOCMOST_GIT_ROOT: '/private/tmp/repo', DOCMOST_SYNC_STATE_DIR: 'state', DOCMOST_KNOWLEDGE_STATE_DIR: resolve('state') },
   ]) assert.throws(() => loadConnectionConfig({ ...env, ...override }), { code: 'CONFIG_ERROR' });
+});
+
+test('service state is usable for project-context publishing with neither a Git nor Markdown root', () => {
+  for (const key of ['DOCMOST_KNOWLEDGE_STATE_DIR', 'DOCMOST_SYNC_STATE_DIR']) {
+    const config = loadConnectionConfig({ ...env, [key]: '/private/tmp/state', DOCMOST_KNOWLEDGE_PROVIDER: 'none' });
+    assert.equal(config.gitRoot, undefined); assert.equal(config.syncRoot, undefined); assert.equal(config.syncStateDir, '/private/tmp/state');
+  }
 });

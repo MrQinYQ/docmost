@@ -101,14 +101,14 @@
 若工具缺失、返回身份/许可错误或未知参数契约，报告具体限制；不要自行构造 HTTP 后门、绕过企业许可或伪造 API Token。
 # Git 发布扩展
 
-仅配置 `DOCMOST_GIT_ROOT` 及仓库外私有状态目录时出现；只读连接只暴露状态工具。以当前 tools/list schema 为准。
+配置一次服务级仓库外私有状态目录即出现，provider=none 也可用，无需固定 Git 根；只读连接只暴露状态工具。以当前 tools/list schema 为准。repositoryRoot 是客户端从当前项目自动检测的规范绝对目录，bind/publish 省略时仅兼容旧 DOCMOST_GIT_ROOT 默认值；status 省略时列出全部项目。
 
 | 工具 | 参数与行为 |
 | --- | --- |
-| bind_git_document | filePath、pageId、commit、branch；已有记录加 replaceBindingId。仅登记与原文一致的提交基线，保留单条记录。 |
-| publish_git_documents | commit、branch，选填 bindingIds、remote。完整对象 ID 与完整 refs/heads 分支，逐文档结果；正文仅来自提交。remote 是已配置别名，只核对推送，不执行 push。 |
-| get_git_document_status | 可选 bindingId；指定记录时读取 currentRevision/currentPersistedRevision，不外发知识库。 |
-| set_git_document_sync | bindingId、action=pause/resume/unbind/rebind；仅 rebind 需 filePath。保留远端内容，恢复不覆盖冲突。 |
-| resolve_git_document_conflict | bindingId、commit、branch、expectedRevision。用户选定合并结果并提交后显式条件解决；再次变动继续冲突。 |
+| bind_git_document | repositoryRoot、filePath、pageId、commit、branch；已有记录加 replaceBindingId。仅登记一致基线，保留单条记录。 |
+| publish_git_documents | repositoryRoot、commit、branch，选填 bindingIds、remote。仅处理当前仓库；显式混入其他项目关联则整批拒绝。完整对象 ID 与完整 refs/heads 分支；正文仅来自提交，remote 只核对推送。 |
+| get_git_document_status | 可选 repositoryRoot 和 bindingId；按仓库筛选，指定记录时读取 currentRevision/currentPersistedRevision，不外发知识库。 |
+| set_git_document_sync | bindingId、action=pause/resume/unbind/rebind；仅 rebind 需 filePath。早期无实例身份记录以 GIT_IDENTITY_UNCONFIRMED 暂停；用户确认可信原仓库后用 action=confirm-repository 并传 repositoryRoot。核对原路径已确认 blob/hash、保存目录身份及前缀、对账旧写入，不上传。普通 resume 不代替首次信任；保留远端内容，恢复不覆盖冲突。 |
+| resolve_git_document_conflict | repositoryRoot、bindingId、commit、branch、expectedRevision。用户选定合并结果并提交后显式条件解决；再次变动继续冲突。 |
 
 Git 来源仍使用原有 retry_knowledge_sync，只补已确认快照。GIT_BRANCH_CONFLICT 需先合并上次 published 提交；GIT_HISTORY_MISSING 需补足历史；GIT_SOURCE_DELETED 保留远端；GIT_REF_CHANGED 需重新检查 HEAD。未确认请求只读对账，不普通更新兜底，不为各分支建副本。

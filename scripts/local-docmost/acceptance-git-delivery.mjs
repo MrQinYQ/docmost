@@ -27,7 +27,7 @@ const safeCode = e => /^[A-Z][A-Z_0-9]{0,79}$/.test(e?.code ?? '') ? e.code : e?
 const cleanEnv = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('DOCMOST_') && !k.startsWith('GIT_')));
 const report = { version: 1, runId: randomUUID(), startedAt: new Date().toISOString(), checks: [], resources: [], cleanup: {}, failures: [] };
 let output, temporary, loginConfig, session, api, control, origin, proxy, priorReport, proxyBlocked = false;
-const clients = new Set(), editors = new Set();
+const clients = new Set(), editors = new Set(), connections = new Map();
 let phase = 'guards';
 async function persist() { if (output) await writeFile(output, JSON.stringify(report, null, 2) + '\n', { mode: 0o600 }); }
 async function check(label, fn) { phase = label; await fn(); report.checks.push({ phase: label, passed: true }); await persist(); process.stdout.write(JSON.stringify({ phase: label, passed: true }) + '\n'); }
@@ -47,7 +47,7 @@ async function connect(env) { const c = await connectMcp(join(root, 'packages/mc
 async function close(c) { await c.close(); clients.delete(c); }
 function git(repo, ...args) { return execFileSync('git', ['-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false', '-C', repo, ...args], { env: { ...cleanEnv, GIT_NO_REPLACE_OBJECTS: '1', GIT_TERMINAL_PROMPT: '0' }, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim(); }
 async function commit(p, text, file = p.file) { await writeFile(join(p.repo, file), text); git(p.repo, 'add', '--', file); git(p.repo, 'commit', '-qm', 'docs: update synthetic delivery original'); return git(p.repo, 'rev-parse', 'HEAD'); }
-const args = (p, commit = git(p.repo, 'rev-parse', 'HEAD'), branch = git(p.repo, 'symbolic-ref', 'HEAD')) => ({ commit, branch, bindingIds: [p.bindingId] });
+const args = (p, commit = git(p.repo, 'rev-parse', 'HEAD'), branch = git(p.repo, 'symbolic-ref', 'HEAD')) => ({ repositoryRoot: p.repo, commit, branch });
 async function settled(p, knowledge = false) {
   return eventually(() => p.rpc.tool('get_git_document_status', { bindingId: p.bindingId }), s => s.state === 'synced' && !s.pending && (!knowledge || s.knowledgeBase?.state === 'synced'), knowledge ? 240000 : 30000);
 }
@@ -55,20 +55,23 @@ async function publish(p, commitId) { const r = await p.rpc.tool('publish_git_do
 async function readPage(id) { return control.tool('get_page', { pageId: id }); }
 async function newProfile(label, ovEnv) {
   const dir = join(temporary, label); await mkdir(dir, { mode: 0o700 });
-  const repo = join(dir, 'repo'), bare = join(dir, 'origin.git'), state = join(dir, 'state');
+  const scope = ovEnv.DOCMOST_OPENVIKING_SCOPE ?? 'core';
+  let connection = connections.get(scope);
+  const repo = join(dir, 'repo'), bare = join(dir, 'origin.git'), state = connection?.state ?? join(temporary, 'state-' + scope);
   await mkdir(repo, { mode: 0o700 }); git(repo, 'init', '-q', '-b', 'feature'); git(repo, 'config', 'user.name', 'Git Delivery Acceptance'); git(repo, 'config', 'user.email', 'acceptance@webmcp.test');
   git(repo, 'init', '-q', '--bare', bare); git(repo, 'remote', 'add', 'origin', bare);
   const page = await control.tool('create_page', { title: label, content: '# Synthetic Git delivery\n\nBaseline original.', spaceId: report.spaceId, parentPageId: report.parentId });
   const resource = { label, pageId: page.id, repo, bare, state, file: 'document.md', ...(ovEnv.DOCMOST_OPENVIKING_SCOPE ? { knowledgeScope: ovEnv.DOCMOST_OPENVIKING_SCOPE } : {}) }; report.resources.push(resource); await persist();
   const original = (await readPage(page.id)).content; const first = await commit(resource, original);
   git(repo, 'branch', 'qa'); git(repo, 'push', '-q', '-u', 'origin', 'feature', 'qa');
-  const converting = !ovEnv.DOCMOST_OPENVIKING_SCOPE;
-  const env = { ...control.env, ...ovEnv, DOCMOST_GIT_ROOT: repo, DOCMOST_KNOWLEDGE_STATE_DIR: state,
+  const converting = scope === 'core' && !connection;
+  const env = connection?.env ?? { ...control.env, ...ovEnv, DOCMOST_KNOWLEDGE_STATE_DIR: state,
     ...(converting ? { DOCMOST_SYNC_ROOT: repo, DOCMOST_SYNC_STATE_DIR: state } : {}) };
-  const rpc = await connect(env);
-  Object.defineProperties(resource, { rpc: { value: rpc, writable: true, enumerable: false }, env: { value: env, enumerable: false } });
+  if (!connection) { connection = { env, state, rpc: await connect(env) }; connections.set(scope, connection); }
+  const rpc = connection.rpc;
+  Object.defineProperties(resource, { rpc: { get: () => connection.rpc, set: value => { connection.rpc = value; }, enumerable: false }, env: { value: env, enumerable: false } });
   const old = converting ? await rpc.tool('bind_markdown', { filePath: resource.file, pageId: page.id, enabled: true }) : undefined;
-  const bound = await rpc.tool('bind_git_document', { filePath: resource.file, pageId: page.id, commit: first, branch: 'refs/heads/feature', ...(old ? { replaceBindingId: old.bindingId } : {}) });
+  const bound = await rpc.tool('bind_git_document', { repositoryRoot: repo, filePath: resource.file, pageId: page.id, commit: first, branch: 'refs/heads/feature', ...(old ? { replaceBindingId: old.bindingId } : {}) });
   if (old) { assert.equal(bound.bindingId, old.bindingId); assert.equal(bound.source, 'git'); resource.sourceConversion = { sameBinding: true, previousSource: 'markdown', currentSource: 'git' }; }
   resource.bindingId = bound.bindingId; resource.first = first;
   // Never serialize environment/session/client objects into the evidence.
@@ -143,6 +146,7 @@ try {
     const space = await control.tool('create_space', { name: 'Git验收-' + report.runId.slice(0, 8), slug: 'git-' + report.runId }); report.spaceId = space.id; await persist();
     const parent = await control.tool('create_page', { title: '文档父目录', content: '# Parent', spaceId: space.id, parentPageId: null }); report.parentId = parent.id; await persist();
     const p = await newProfile('Git固定快照', {});
+    const other = await newProfile('另一个项目', {});
     await check('feature commit before push excludes dirty working tree', async () => {
       const text = '# Git delivery original\n\nCommitted first section.\n\nCommitted second section.\n';
       p.a = await commit(p, text); await writeFile(join(p.repo, p.file), '# Never upload dirty draft\n');
@@ -150,11 +154,47 @@ try {
       await publish(p, p.a);
       assert.equal(git(p.repo, '--git-dir', p.bare, 'rev-parse', 'refs/heads/feature'), p.first);
       const page = await readPage(p.pageId); assert.ok(page.content.includes('Committed second section.')); assert.ok(!page.content.includes('dirty draft'));
+      assert.ok((await readPage(other.pageId)).content.includes('Baseline original.'));
       p.committedHash = digest(text); p.docmostSavedHash = digest(page.content);
+    });
+    await check('same rootless MCP process isolates concurrent projects and rejects mixed binding batches', async () => {
+      assert.equal(p.rpc, other.rpc); assert.equal(p.env.DOCMOST_GIT_ROOT, undefined); assert.equal(p.state, other.state);
+      const a = '# Project A\n\nCommitted second section.\n\nA-' + report.runId + '\n', b = '# Project B\n\nB-' + report.runId + '\n';
+      p.a = await commit(p, a); const otherCommit = await commit(other, b);
+      const before = await Promise.all([readPage(p.pageId), readPage(other.pageId)]);
+      await assert.rejects(p.rpc.tool('publish_git_documents', { ...args(p), bindingIds: [p.bindingId, other.bindingId] }), { code: 'TARGET_CHANGED' });
+      const after = await Promise.all([readPage(p.pageId), readPage(other.pageId)]); assert.deepEqual(after.map(x => x.content), before.map(x => x.content));
+      await Promise.all([publish(p), publish(other)]);
+      const pages = await Promise.all([readPage(p.pageId), readPage(other.pageId)]);
+      assert.ok(pages[0].content.includes('A-' + report.runId) && !pages[0].content.includes('B-' + report.runId));
+      assert.ok(pages[1].content.includes('B-' + report.runId) && !pages[1].content.includes('A-' + report.runId));
+      const scoped = await p.rpc.tool('get_git_document_status', { repositoryRoot: p.repo }); assert.deepEqual(scoped.bindings.map(x => x.bindingId), [p.bindingId]);
+      report.multiProject = { sameProcess: true, processId: p.rpc.child.pid, sameLedger: true, noConfiguredGitRoot: true, mixedBatchRejectedWithoutWrites: true, otherCommit };
+    });
+    await check('legacy default-root invocation then rootless restart preserves both project bindings', async () => {
+      await close(p.rpc);
+      const legacy = await connect({ ...p.env, DOCMOST_GIT_ROOT: p.repo });
+      try {
+        const r = await legacy.tool('publish_git_documents', { commit: p.a, branch: 'refs/heads/feature' }); assert.equal(r.documents.length, 1); assert.equal(r.documents[0].bindingId, p.bindingId);
+      } finally { await close(legacy); }
+      p.rpc = await connect(p.env);
+      const all = await p.rpc.tool('get_git_document_status'); assert.deepEqual(all.bindings.map(x => x.bindingId).sort(), [p.bindingId, other.bindingId].sort());
+      assert.equal((await settled(p)).git.published.commit, p.a); await settled(other);
+      report.legacyRecovery = { sameLedgerAndBindingIds: true, noManualMigration: true, removedDefaultRoot: true };
+    });
+    await check('older unpinned record pauses and explicitly confirms its original repository without a page write', async () => {
+      await close(p.rpc);
+      const filename = join(p.state, 'bindings', p.bindingId + '.json'), saved = JSON.parse(await readFile(filename, 'utf8'));
+      delete saved.git.instance; delete saved.git.prefix; await writeFile(filename, JSON.stringify(saved), { mode: 0o600 });
+      p.rpc = await connect(p.env);
+      const before = (await readPage(p.pageId)).content, pending = await p.rpc.tool('get_git_document_status', { bindingId: p.bindingId }); assert.equal(pending.error.code, 'GIT_IDENTITY_UNCONFIRMED');
+      const trusted = await p.rpc.tool('set_git_document_sync', { bindingId: p.bindingId, action: 'confirm-repository', repositoryRoot: p.repo });
+      assert.equal(trusted.bindingId, p.bindingId); assert.equal(trusted.state, 'synced'); assert.equal(trusted.git.published.commit, p.a); assert.equal((await readPage(p.pageId)).content, before);
+      report.legacyRecovery.explicitFirstTrust = true;
     });
     await check('divergent branch pauses same page then merged ancestry publishes', async () => {
       git(p.repo, 'restore', '--', p.file); git(p.repo, 'checkout', '-qb', 'parallel', p.first); p.b = await commit(p, '# Parallel branch original\n');
-      const r = await p.rpc.tool('publish_git_documents', args(p)); assert.equal(r.documents[0].error.code, 'GIT_BRANCH_CONFLICT'); assert.equal((await p.rpc.tool('get_git_document_status')).bindings.length, 1);
+      const r = await p.rpc.tool('publish_git_documents', args(p)); assert.equal(r.documents[0].error.code, 'GIT_BRANCH_CONFLICT'); assert.equal((await p.rpc.tool('get_git_document_status', { repositoryRoot: p.repo })).bindings.length, 1);
       assert.ok((await readPage(p.pageId)).content.includes('Committed second section.'));
       try { git(p.repo, 'merge', '--no-commit', 'feature'); } catch { /* Expected content conflict; explicit synthetic merge follows. */ }
       p.merged = await commit(p, '# Merged branch original\n\nBoth branch changes accepted.\n'); await publish(p);
@@ -169,7 +209,7 @@ try {
       const r = await p.rpc.tool('publish_git_documents', args(p)); assert.equal(r.documents[0].error.code, 'CONFLICT');
       const current = await p.rpc.tool('get_git_document_status', { bindingId: p.bindingId });
       const merged = await commit(p, '# Resolved original\n\nWeb and Git edit reconciled.\n');
-      await p.rpc.tool('resolve_git_document_conflict', { bindingId: p.bindingId, commit: merged, branch: 'refs/heads/qa', expectedRevision: current.currentRevision }); await settled(p);
+      await p.rpc.tool('resolve_git_document_conflict', { repositoryRoot: p.repo, bindingId: p.bindingId, commit: merged, branch: 'refs/heads/qa', expectedRevision: current.currentRevision }); await settled(p);
       await editor.close();
       assert.ok((await readPage(p.pageId)).content.includes('Web and Git edit reconciled.'));
     });

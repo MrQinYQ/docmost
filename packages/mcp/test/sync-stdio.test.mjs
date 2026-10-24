@@ -30,6 +30,7 @@ const WRITE_TOOLS = [
 const SYNC_TOOLS = [
   'bind_markdown', 'get_markdown_sync_status', 'set_markdown_sync', 'resolve_markdown_sync',
 ];
+const GIT_TOOLS = ['bind_git_document', 'publish_git_documents', 'get_git_document_status', 'set_git_document_sync', 'resolve_git_document_conflict'];
 
 function hashMarkdown(markdown) {
   return createHash('sha256').update(markdown).digest('hex');
@@ -276,7 +277,7 @@ async function harness(t, { configured = true, overrides = {} } = {}) {
 test('configured stdio discovers four strict local Markdown controls', { timeout: 10000 }, async t => {
   const { rpc } = await harness(t);
   const tools = (await rpc.request('tools/list')).result.tools;
-  assert.deepEqual(tools.map(tool => tool.name).sort(), [...READ_TOOLS, ...WRITE_TOOLS, ...SYNC_TOOLS].sort());
+  assert.deepEqual(tools.map(tool => tool.name).sort(), [...READ_TOOLS, ...WRITE_TOOLS, ...SYNC_TOOLS, ...GIT_TOOLS].sort());
   for (const name of SYNC_TOOLS) {
     const tool = tools.find(value => value.name === name);
     assert.equal(tool.inputSchema.additionalProperties, false, name);
@@ -496,7 +497,7 @@ test('configured read-only stdio adds status only and cannot watch or upload sav
   await rpc.end();
   const reader = await start({ DOCMOST_READ_ONLY: '1' });
   const tools = (await reader.request('tools/list')).result.tools;
-  assert.deepEqual(tools.map(tool => tool.name).sort(), [...READ_TOOLS, 'get_markdown_sync_status'].sort());
+  assert.deepEqual(tools.map(tool => tool.name).sort(), [...READ_TOOLS, 'get_markdown_sync_status', 'get_git_document_status'].sort());
   const overview = toolData(await reader.call('get_markdown_sync_status'));
   assert.equal(overview.readOnly, true);
   assert.ok(overview.bindings.some(value => value.bindingId === binding.bindingId), 'read-only status can inspect existing metadata');

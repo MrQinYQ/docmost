@@ -4,6 +4,7 @@ import { knowledgeSelection, knowledgeConnectionStatus } from './knowledge.mjs';
 import { ApiError, createApiClient } from './api.mjs';
 import { ConfigError } from './config.mjs';
 import { digest, validRelativeFile } from './sync-files.mjs';
+import { isAbsolute, resolve } from 'node:path';
 
 const id = z.string().trim().min(1).max(128);
 const uuid = z.uuid();
@@ -315,26 +316,28 @@ export function createDocmostServer(config, { fetchImpl, syncManager } = {}) {
       bindingId, expectedRevision: z.string().regex(/^[a-f0-9]{64}$/),
     }), false, input => syncManager.resolve(input), true);
   }
-  if (config.gitRoot && syncManager) {
+  if ((config.knowledgeStateDir || config.syncStateDir || config.gitRoot) && syncManager) {
+    const repositoryRoot = z.string().min(1).max(4096).refine(value => isAbsolute(value) && resolve(value) === value, 'Use the canonical absolute root detected in the current project.').describe('Current project root detected by the Skill/client. Bind and publish require this unless a legacy default root is configured; status may omit it to list all projects.').optional();
     const commit = z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/);
     const branch = z.string().min(12).max(1024).startsWith('refs/heads/');
     const filePath = z.string().min(1).max(4096).refine(validRelativeFile, 'Use a relative .md path without traversal.');
     register('bind_git_document', 'Associate an explicit committed Markdown path with an existing canonical Docmost page. Requires matching live/persisted baseline and conditional sync endpoints. No Docmost write or page creation. Future explicit commit publication uses the same page across branches. replaceBindingId explicitly converts the same page from its old settled source while retaining its knowledge target.', z.strictObject({
-      filePath, pageId: uuid, commit, branch, replaceBindingId: uuid.optional(),
+      repositoryRoot, filePath, pageId: uuid, commit, branch, replaceBindingId: uuid.optional(),
     }), false, input => syncManager.bindGitDocument(input));
     register('publish_git_documents', 'Publish full Markdown blobs from an exact branch commit for enrolled Git documents only. Any branch, before or after push. Never reads uncommitted workspace content or creates pages. Divergent histories and Docmost version conflicts pause affected documents. Knowledge failure does not repeat Docmost writes. Optional remote names an existing Git remote to independently check its ref; no Git push is performed.', z.strictObject({
-      commit, branch, bindingIds: z.array(uuid).min(1).max(50).refine(values => new Set(values).size === values.length).optional(),
+      repositoryRoot, commit, branch, bindingIds: z.array(uuid).min(1).max(50).refine(values => new Set(values).size === values.length).optional(),
       remote: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/).optional(),
     }), false, input => syncManager.publishGitDocuments(input), true);
-    register('get_git_document_status', 'Read durable Git associations, confirmed commit/path/hash, separate knowledge state and safe errors. With bindingId, observe current live/persisted Docmost revisions without changing the stored baseline. Does not upload, publish or resolve conflicts.', z.strictObject({ bindingId: uuid.optional() }), true,
+    register('get_git_document_status', 'Read durable Git associations. Pass repositoryRoot detected by the current project to filter one repository; omit to list all projects. With bindingId, observe live/persisted Docmost revisions without changing the baseline. No upload or conflict resolution.', z.strictObject({ repositoryRoot, bindingId: uuid.optional() }), true,
       input => syncManager.getGitDocumentStatus(input));
-    register('set_git_document_sync', 'Pause, resume, unbind or explicitly rebind the path of a Git document. No Docmost write/delete. Resume preserves conflicts and baselines; pending writes must be reconciled before unbinding/rebinding.', z.strictObject({
-      bindingId: uuid, action: z.enum(['pause', 'resume', 'unbind', 'rebind']), filePath: filePath.optional(),
+    register('set_git_document_sync', 'Pause, resume, unbind or explicitly rebind the path of a Git document. confirm-repository explicitly trusts the original local repository of an older record after the user confirms that source; pass detected repositoryRoot. It verifies the saved blob and pins directory identity without uploading or clearing content conflicts. Resume never establishes this first trust. Pending writes must be reconciled before unbinding/rebinding.', z.strictObject({
+      bindingId: uuid, action: z.enum(['pause', 'resume', 'unbind', 'rebind', 'confirm-repository']), filePath: filePath.optional(), repositoryRoot,
     }).superRefine((input, ctx) => {
       if ((input.action === 'rebind') !== (input.filePath !== undefined)) ctx.addIssue({ code: 'custom', message: 'Only rebind requires filePath.', path: ['filePath'] });
+      if (input.action === 'confirm-repository' && input.repositoryRoot === undefined) ctx.addIssue({ code: 'custom', message: 'Repository confirmation requires detected repositoryRoot.', path: ['repositoryRoot'] });
     }), false, input => syncManager.setGitDocumentSync(input));
     register('resolve_git_document_conflict', 'Explicitly publish a user-selected merged commit against the currently observed Docmost revision. Replaces the complete body. The merged commit must include the last published commit; a newer remote edit rejects the request. Never treat resume as overwrite authorization.', z.strictObject({
-      bindingId: uuid, commit, branch, expectedRevision: z.string().regex(/^[a-f0-9]{64}$/),
+      repositoryRoot, bindingId: uuid, commit, branch, expectedRevision: z.string().regex(/^[a-f0-9]{64}$/),
     }), false, input => syncManager.resolveGitDocumentConflict(input), true);
   }
   if (mirrorEnabled) {

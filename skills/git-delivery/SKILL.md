@@ -9,7 +9,9 @@ description: Use when 用户要求暂存、生成提交信息、commit、push，
 
 ## 检查与范围
 
-先运行 `node <本 Skill 目录>/scripts/inspect-git.mjs --repo <仓库绝对路径>`，结合实际 diff 和仓库说明确认分支、已有暂存、工作区、remote 和目标。脚本只输出状态，不自动暂存、提交、推送。
+在用户当前项目目录运行 `node <本 Skill 目录>/scripts/inspect-git.mjs`；也可用 `--repo <当前项目目录>` 指定上下文，允许项目子目录。脚本自动向上识别规范仓库根并输出 `root`，结合实际 diff 和仓库说明确认分支、已有暂存、工作区、remote 和目标。它只读取状态，不自动暂存、提交、推送。空仓库的 head 为 null，先正常完成首次提交再发布。
+
+将输出的 root 作为本次 `repositoryRoot`，随 Git 文档查询、绑定、发布和显式解决一起传入。同一 Docmost MCP 连接可用于多个项目；切项目重新检测，不要求用户提供 Git 地址、不逐项目改 MCP 配置或重启。不能用 MCP 安装目录或其进程 cwd 猜仓库。
 
 用户说“全部修改”才覆盖全部本次变更；指定文件时只提交这些文件，保留无关暂存和未跟踪文件。先比较暂存与工作区，部分暂存不可被无意重写。已有无关暂存时可用 `git commit --only -- <授权文件>`，并在提交后核对原无关索引。按实际 diff 生成能说明目的的提交信息，遵从仓库格式。无变更则不造空提交。
 
@@ -20,8 +22,8 @@ description: Use when 用户要求暂存、生成提交信息、commit、push，
 按请求选择下面的路径，每次成功 commit 都执行发布阶段；**发布发生在下一次 push 或 merge 之前**，不限 main 分支。
 
 1. **提交**：按范围暂存、检查最终暂存 diff、提交；读取完整 HEAD 和完整 `refs/heads/...`。
-2. **文档**：发现当前连接实际提供的 Git 文档工具，调用 `get_git_document_status`；有关联时调用 `publish_git_documents({commit,branch})`。读取每份文档的状态；`synced`、`unconfirmed`、冲突及知识库处理分别报告。无关联不创建页面。
-3. **推送**：仅请求包含 push 时推送选定 remote/ref；使用实际远端 ref 核对结果。推送后的回执可用同一 commit/ref 再调用 `publish_git_documents` 并传 `remote`，这是去重核对而非再次正文上传。
+2. **文档**：发现当前连接实际提供的 Git 文档工具，调用 `get_git_document_status({repositoryRoot})`；有关联时调用 `publish_git_documents({repositoryRoot,commit,branch})`。仅使用当前项目的关联，不能拿其他项目的 bindingIds 继续发布。读取每份文档的状态；`synced`、`unconfirmed`、冲突及知识库处理分别报告。无关联不创建页面。
+3. **推送**：仅请求包含 push 时推送选定 remote/ref；使用实际远端 ref 核对结果。推送后的回执可用同一 repositoryRoot/commit/ref 再调用 `publish_git_documents` 并传 `remote`，这是去重核对而非再次正文上传。
 4. **合并目标**：仅用户明确要求的目标，源分支推送后才合并。切目标前保护已有工作区/暂存；不能安全切换时保留现场并暂停。真实冲突暂停，不自动选 ours/theirs。合并成功后固定目标完整 HEAD/ref，执行第 2 步，再按授权推送目标。
 
 仅 commit：执行 1、2，结束。仅 push：不创建提交，固定当前 HEAD，先执行 2 补齐已关联文档及未完成任务，再执行 3。未配置 Docmost 或没有 Git 工具时正常完成已授权 Git 操作，明确说明文档未检查，不声称已同步。
@@ -30,7 +32,7 @@ description: Use when 用户要求暂存、生成提交信息、commit、push，
 
 ## 文档约束
 
-需要关联、配置或处理冲突时读取 [文档同步约定](references/document-sync.md)。只发布已登记记录；从完整提交读取正文，未提交内容不上传。多个分支写同一 pageId，分叉历史或网页改动暂停；不建副本、不退回普通 `update_page`、不运行 `ov`。删除本地文件保留远端。
+需要关联、配置、处理冲突或首次信任旧记录时读取 [文档同步约定](references/document-sync.md)。`GIT_IDENTITY_UNCONFIRMED` 要先说明页面、原路径及 pending，取得用户对可信原仓库的明确确认，再执行 confirm-repository；普通 resume/retry 不能代替。只发布已登记记录；从完整提交读取正文，未提交内容不上传。多个分支写同一 pageId，分叉历史或网页改动暂停；不建副本、不退回普通 `update_page`、不运行 `ov`。删除本地文件保留远端。
 
 ## 交付结果
 

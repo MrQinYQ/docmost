@@ -197,6 +197,10 @@ node /absolute/path/docmost-mcp-source/packages/mcp/dist/index.mjs --check-knowl
 基础或扩展工具注册成功不能证明目标部署支持全部接口。`search_attachments` 需要目标服务器提供 `/api/search-attachments`；本 fork 新增了支持个人会话和页面权限检查的社区接口，公司原版可能返回 404。工具会明确报告 `UNSUPPORTED_DEPLOYMENT`，不能当作没有附件；仅在管理员合法部署支持版本后再验收，不通过数据库、浏览器或许可绕过补齐。
 # Git 提交发布（可选）
 
-用户选择“提交后发布”时，在原连接增加绝对 `DOCMOST_GIT_ROOT`；将 `DOCMOST_KNOWLEDGE_STATE_DIR` 指向仓库外私有目录。已有 MD 或页面记录沿用原状态目录，`DOCMOST_SYNC_STATE_DIR` 若同时设置必须相同。每个连接只对应一个仓库，其他项目另配连接；不把状态目录或凭据放进仓库。
+用户选择“提交后发布”时，不询问或配置 Git 地址/项目目录。Agent 在原服务连接沿用既有 DOCMOST_KNOWLEDGE_STATE_DIR；若没有，自动选择用户配置目录下的私有 docmost-mcp 状态子目录并保存一次，避免放进安装源码或用户项目。已有 MD/页面/Git 状态必须沿用，DOCMOST_SYNC_STATE_DIR 若同时设置须相同；该别名单独配置不会开启 MD 监听。同一连接可供多个项目使用，Skill 每次自动检测并传 repositoryRoot。
+
+旧 DOCMOST_GIT_ROOT 仅是兼容默认值，不作为新安装必填项；已有关联不需要重建或手改 JSON。已有值可以保留，新 Skill 的显式项目上下文优先。删除旧值也会按原账本仓库身份恢复；切换项目不新增连接、不改凭据或配置、不重启。个人/共享知识库仍按各自目的地连接和私有账本隔离，不合并这些作用域。
+
+早期 Git 记录缺少目录实例指纹时，状态为 GIT_IDENTITY_UNCONFIRMED，保留 bindingId/page/pending，不静默信任同路径 clone。Agent 说明原路径、页面和待处理状态，用户明确确认可信原仓库后才调用 set_git_document_sync 的 confirm-repository（传检测到的 repositoryRoot）。工具核对已确认 blob/hash、保存原路径前缀和 dev/ino/birthtime 指纹并对账，不上传正文。原路径/历史不可核对时保留暂停；不重建关联、不改 JSON。普通 resume/retry 无法代替首次确认。新版本已保存指纹的关联自动恢复，无需此步骤。
 
 从同版本仓库的 `skills/git-delivery` 安装到 `~/.codex/skills/git-delivery`，保留既有 Skill 并在替换前备份。重建 MCP 并重启连接，实际发现五个 Git 扩展工具；先查询状态，再明确转换原来源。配置不自动绑定、上传或安装 hook。中文引导见 `docs/git-delivery.md`。没有知识库时选择 provider=none；选 OpenViking 时沿用上文地址、私有 Key 文件和个人/共享向导。

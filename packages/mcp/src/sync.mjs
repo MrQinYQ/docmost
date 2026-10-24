@@ -7,7 +7,7 @@ import { createSyncStore } from './sync-store.mjs';
 import { createKnowledgeRuntime, knowledgeConnectionStatus, knowledgeStatus, legacyKnowledgeStatus, validateKnowledgeState } from './knowledge.mjs';
 import { resolveDocumentLayout, isDescendantLayout } from './document-layout.mjs';
 import { readPageSource } from './page-source.mjs';
-import { openGitSource } from './git-source.mjs';
+import { createGitRepositories, gitRepositoryId } from './git-repositories.mjs';
 import { validateGitBinding, confirmedGitBinding } from './git-binding.mjs';
 import { createGitPublication } from './git-publication.mjs';
 
@@ -36,6 +36,7 @@ const messages = {
   GIT_HISTORY_MISSING: 'The required Git history is unavailable. Restore it before publishing.',
   GIT_REF_CHANGED: 'The branch no longer points to the requested commit. Inspect its current HEAD before publishing.',
   GIT_SOURCE_DELETED: 'The associated Markdown is absent from this commit. The remote page was preserved.',
+  GIT_IDENTITY_UNCONFIRMED: 'This older association has no repository-instance identity. Explicitly confirm its trusted original local repository before resuming; its page and pending state were preserved.',
   NETWORK_ERROR: 'The sync service could not be reached. Check connectivity before resuming.',
   TIMEOUT: 'The sync request timed out. Inspect pending state before resuming.',
   CANCELLED: 'The sync request was cancelled. A dispatched write may have completed.',
@@ -95,16 +96,19 @@ export function createMarkdownSync(config, { api, mirrorClient, knowledgeAdapter
   const records = new Map();
   const dormantPages = new Set();
   const dormantFiles = new Set();
-  const sourceTaken = (root, filePath, except) => dormantFiles.has(sourceFileKey(root, filePath))
-    || [...records.values()].some(binding => binding !== except && binding.root === root && binding.filePath === filePath);
+  const sourceTaken = (root, filePath, except, commonDir, prefix = '') => dormantFiles.has(sourceFileKey(root, filePath))
+    || [...records.values()].some(binding => binding !== except && ((binding.root === root && binding.filePath === filePath)
+      || (commonDir && gitSource(binding) && binding.git.commonDir === commonDir
+        && (binding.git.prefix === undefined || binding.git.prefix + binding.filePath === prefix + filePath))));
   const watchers = new Map();
   const cancellation = new AbortController();
-  let store, rootInfo, identity, startPromise, closePromise, interval, mirror, mirrorTree, knowledgeRuntime, gitReader, gitPublication;
+  let store, rootInfo, identity, startPromise, closePromise, interval, mirror, mirrorTree, knowledgeRuntime, gitPublication;
   let controls = Promise.resolve();
   let state = 'running';
   let startupError;
   let closed = false;
   const stateDir = config.knowledgeStateDir ?? config.syncStateDir;
+  const repositories = createGitRepositories({ stateDir, signal: cancellation.signal });
   const providerStatus = binding => {
     const result = knowledgeStatus(binding, config, knowledgeAdapters);
     return binding.pageRefresh && result?.enabled && result.state !== 'blocked'
@@ -118,7 +122,7 @@ export function createMarkdownSync(config, { api, mirrorClient, knowledgeAdapter
     bindingId: binding.bindingId, source: binding.source ?? 'markdown', ...(binding.filePath ? { filePath: binding.filePath } : {}), pageId: binding.pageId,
     spaceId: binding.spaceId, workspaceId: binding.workspaceId, enabled: binding.enabled,
     state: binding.state, localHash: binding.localHash, remoteRevision: binding.remoteRevision,
-    ...(gitSource(binding) ? { git: { published: { ...binding.git.published }, ...(binding.git.lastChecked ? { lastChecked: { ...binding.git.lastChecked } } : {}),
+    ...(gitSource(binding) ? { repository: { root: binding.root, id: gitRepositoryId(binding.git) }, git: { published: { ...binding.git.published }, ...(binding.git.lastChecked ? { lastChecked: { ...binding.git.lastChecked } } : {}),
       ...(binding.git.pushReceipt ? { pushReceipt: { ...binding.git.pushReceipt } } : {}), ...(binding.git.intent ? { intent: { ...binding.git.intent } } : {}) } } : {}),
     ...(binding.pending ? { pending: { ...binding.pending } } : {}),
     ...(binding.errorCode ? { error: { code: binding.errorCode, message: messages[binding.errorCode] } } : {}),
@@ -154,7 +158,7 @@ export function createMarkdownSync(config, { api, mirrorClient, knowledgeAdapter
   async function checkIdentity(binding) {
     const current = identityOf(await post('users/me', {}));
     if (current.userId !== binding.userId || current.workspaceId !== binding.workspaceId
-      || binding.origin !== config.origin || (!pageSource(binding) && binding.root !== (gitSource(binding) ? config.gitRoot : config.syncRoot))) throw errorFor('IDENTITY_CHANGED');
+      || binding.origin !== config.origin || (markdownSource(binding) && binding.root !== config.syncRoot)) throw errorFor('IDENTITY_CHANGED');
   }
   async function ensureLease(binding) {
     try {
@@ -173,14 +177,15 @@ export function createMarkdownSync(config, { api, mirrorClient, knowledgeAdapter
   }
   async function readConfirmedSource(binding) {
     if (!gitSource(binding)) return readMarkdown(config.syncRoot, rootInfo, binding.filePath);
-    const source = await gitReader.readSnapshot({ commit: binding.git.published.commit, filePath: binding.git.published.filePath ?? binding.filePath });
+    const reader = await repositories.forBinding(binding);
+    const source = await reader.readSnapshot({ commit: binding.git.published.commit, filePath: binding.git.published.filePath ?? binding.filePath });
     if (source.kind !== 'body' || source.hash !== binding.localHash || source.blob !== binding.git.published.blob) throw errorFor('INVALID_SOURCE');
     return source;
   }
   async function setFailure(binding, error, pending = Boolean(binding.pending)) {
     const code = errorCode(error);
     if (closed && code === 'CANCELLED' && !pending) return;
-    const blocked = ['IDENTITY_CHANGED', 'TARGET_CHANGED', 'FORBIDDEN', 'UNAUTHENTICATED', 'NOT_FOUND', 'UNSUPPORTED_DEPLOYMENT', 'INVALID_STATE', 'LEASE_BUSY'].includes(code);
+    const blocked = ['IDENTITY_CHANGED', 'TARGET_CHANGED', 'GIT_IDENTITY_UNCONFIRMED', 'FORBIDDEN', 'UNAUTHENTICATED', 'NOT_FOUND', 'UNSUPPORTED_DEPLOYMENT', 'INVALID_STATE', 'LEASE_BUSY'].includes(code);
     binding.state = ['CONFLICT', 'GIT_BRANCH_CONFLICT'].includes(code) ? 'conflict' : pending && !blocked ? 'unconfirmed' : 'blocked';
     binding.errorCode = pending && !['CONFLICT', 'GIT_BRANCH_CONFLICT'].includes(code) && !blocked ? 'UNCONFIRMED' : code;
     if (binding._lease && !config.readOnly) await persist(binding);
@@ -295,14 +300,13 @@ export function createMarkdownSync(config, { api, mirrorClient, knowledgeAdapter
   }
   async function initializeBinding(binding) {
     try {
-      if (binding.origin !== config.origin || (!pageSource(binding) && binding.root !== (gitSource(binding) ? config.gitRoot : config.syncRoot))) throw errorFor('TARGET_CHANGED');
+      if (binding.origin !== config.origin || (markdownSource(binding) && binding.root !== config.syncRoot)) throw errorFor('TARGET_CHANGED');
       if (binding.userId !== identity.userId || binding.workspaceId !== identity.workspaceId) throw errorFor('IDENTITY_CHANGED');
       binding._lease = await store.acquire(binding, cancellation.signal);
       if (closed) return;
       if (pageSource(binding)) return;
       if (gitSource(binding)) {
-        const repo = await gitReader.identity();
-        if (repo.commonDir !== binding.git.commonDir || repo.objectFormat !== binding.git.objectFormat) throw errorFor('TARGET_CHANGED');
+        await repositories.forBinding(binding);
         if (binding.pending) await reconcile(binding);
         else {
           const remote = await remoteFor(binding);
@@ -331,10 +335,6 @@ export function createMarkdownSync(config, { api, mirrorClient, knowledgeAdapter
         rootInfo = await absoluteDirectory(config.syncRoot, 'INVALID_SOURCE');
         if (contained(config.syncRoot, stateDir) || contained(stateDir, config.syncRoot)) throw errorFor('INVALID_STATE');
       }
-      if (config.gitRoot) {
-        if (contained(config.gitRoot, stateDir) || contained(stateDir, config.gitRoot)) throw errorFor('INVALID_STATE');
-        gitReader = await openGitSource(config.gitRoot, { signal: cancellation.signal });
-      }
       store = await createSyncStore(stateDir, { readOnly: config.readOnly });
       knowledgeRuntime = createKnowledgeRuntime(config, { adapters: knowledgeAdapters, client: mirrorClient, post, store, persist, signal: cancellation.signal,
         deletionReady: (binding, job) => !job.waitFor?.some(id => {
@@ -350,7 +350,7 @@ export function createMarkdownSync(config, { api, mirrorClient, knowledgeAdapter
         const fileKey = binding.filePath && sourceFileKey(binding.root, binding.filePath);
         if (seenPages.has(binding.pageId) || (fileKey && seenFiles.has(fileKey))) throw errorFor('INVALID_STATE');
         seenPages.add(binding.pageId); if (fileKey) seenFiles.add(fileKey);
-        if ((!config.syncRoot && markdownSource(binding)) || (!config.gitRoot && gitSource(binding))) { dormantPages.add(binding.pageId); if (fileKey) dormantFiles.add(fileKey); continue; }
+        if (!config.syncRoot && markdownSource(binding)) { dormantPages.add(binding.pageId); if (fileKey) dormantFiles.add(fileKey); continue; }
         if (records.has(binding.bindingId)) throw errorFor('INVALID_STATE');
         records.set(binding.bindingId, binding);
       }
@@ -795,7 +795,7 @@ export function createMarkdownSync(config, { api, mirrorClient, knowledgeAdapter
   }
   const gitMethod = name => async input => {
     await start();
-    gitPublication ??= createGitPublication({ config, records, store, reader: gitReader, enqueue, controlQueue, requireWritable, requireRunning,
+    gitPublication ??= createGitPublication({ config, records, store, repositories, enqueue, controlQueue, requireWritable, requireRunning,
       ensureLease, checkIdentity, persist, snapshot, remoteFor, upload, reconcile, setFailure, errorFor, post, identity: () => identity,
       initialRemote: async (pageId, content) => validateRemote(await post('pages/sync-state', { pageId, content }), pageId, true),
       mirror, retryKnowledgeInline: binding => mirrorTree?.run(binding, () => mirror.retry(binding)),

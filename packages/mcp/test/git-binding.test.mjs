@@ -13,6 +13,8 @@ test('persistent Git records require exact repository, object format and confirm
     b => { b.git.commonDir = 'relative'; },
     b => { b.git.published.branch = 'refs/heads/../bad'; },
     b => { b.git.token = 'unexpected'; },
+    b => { b.git.instance = 'd'.repeat(64); },
+    b => { b.git.instance = 'd'.repeat(64); b.git.prefix = '../'; },
     b => { b.git.intent = { ...b.git.published, content: 'Never persist in record JSON' }; },
   ]) { const b = record(); mutate(b); assert.throws(() => validateGitBinding(b), { code: 'INVALID_STATE' }); }
 });

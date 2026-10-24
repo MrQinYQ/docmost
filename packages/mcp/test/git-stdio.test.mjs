@@ -23,7 +23,7 @@ async function connect(t, options = {}) {
   const env = { ...process.env, DOCMOST_URL: `http://127.0.0.1:${server.address().port}`, DOCMOST_ALLOW_LOCAL_HTTP: '1',
     DOCMOST_AUTH_MODE: 'api_key', DOCMOST_API_TOKEN: 'synthetic-git-stdio-token', DOCMOST_API_TOKEN_FILE: undefined, DOCMOST_SESSION_FILE: undefined,
     DOCMOST_DEFAULT_SPACE_ID: spaceId, DOCMOST_DEFAULT_PARENT_PAGE_ID: undefined, DOCMOST_READ_ONLY: options.readOnly ? '1' : '0',
-    DOCMOST_GIT_ROOT: f.root, DOCMOST_KNOWLEDGE_STATE_DIR: f.config.knowledgeStateDir,
+    DOCMOST_GIT_ROOT: options.rootless ? undefined : f.root, DOCMOST_KNOWLEDGE_STATE_DIR: f.config.knowledgeStateDir,
     DOCMOST_SYNC_ROOT: undefined, DOCMOST_SYNC_STATE_DIR: undefined, DOCMOST_KNOWLEDGE_PROVIDER: 'none' };
   const child = spawn(process.execPath, [entry], { env, stdio: ['pipe', 'pipe', 'pipe'] });
   let buffer = '', stderr = '', serial = 0; const requests = new Map();
@@ -75,6 +75,15 @@ test('read-only stdio exposes only Git status and never dispatches writes', asyn
   assert.ok(tools.some(tool => tool.name === 'get_git_document_status'));
   assert.equal(tools.some(tool => ['bind_git_document', 'publish_git_documents', 'set_git_document_sync', 'resolve_git_document_conflict'].includes(tool.name)), false);
   assert.equal(f.state.writes, 0);
+});
+
+test('rootless stdio discovers publication tools and accepts per-call project context', async t => {
+  const f = await connect(t, { rootless: true }); const { tools } = await f.call('tools/list');
+  assert.ok(tools.some(tool => tool.name === 'publish_git_documents'));
+  const bound = await f.tool('bind_git_document', { repositoryRoot: f.root, pageId, filePath: 'document.md', commit: f.first, branch: 'refs/heads/feature' });
+  assert.equal(bound.result.isError, undefined); assert.equal(bound.data.repository.root, f.root);
+  await f.save('# Context selected committed body\n'); const commit = f.commit();
+  const r = await f.tool('publish_git_documents', { repositoryRoot: f.root, commit, branch: 'refs/heads/feature' }); assert.equal(r.data.documents[0].state, 'synced');
 });
 
 test('missing conditional endpoints report unsupported and never fall back to ordinary update', async t => {

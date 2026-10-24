@@ -382,4 +382,4 @@ cp -R /absolute/path/docmost-mcp-source/skills/docmost-mcp .agents/skills/docmos
 本地包遵循仓库 [AGPL-3.0 许可证](../LICENSE)。企业目录另有许可证；MCP 不复制或补齐企业实现。个人会话调用现有社区登录和文档接口，企业 API Key 能力仍由部署许可与管理员配置决定。[Docmost 官方 API 参考](https://docmost.com/api-docs)
 # Git 提交后发布
 
-保存即同步之外，可选择 Git 来源，在任意分支成功提交后发布固定 Markdown 快照，并通过 `git-delivery` Skill 执行 add/commit/push/指定分支合并。多个分支共用同一页面，冲突暂停。安装与私有账本、旧记录转换及自验见 [Git Delivery](git-delivery.md)。配置本身不绑定文件，也不安装 Git hook。
+保存即同步之外，可选择 Git 来源，在任意分支成功提交后发布固定 Markdown 快照，并通过 git-delivery Skill 执行 add/commit/push/指定分支合并。Skill 自动识别当前仓库，同一 MCP 支持多个项目；用户不必配置 Git 地址/路径，不为切换项目改配置或重启。旧 Git 根仅保留为兼容默认值，原账本无需迁移。多个分支共用同一页面，冲突暂停。安装、状态目录、旧记录转换及自验见 [Git Delivery](git-delivery.md)。配置本身不绑定文件或安装 Git hook。

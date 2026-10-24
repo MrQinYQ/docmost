@@ -15,9 +15,9 @@ test('MD synchronization is opt-in with separate absolute source and state direc
   assert.equal(config.syncRoot, '/private/tmp/source');
   assert.equal(config.syncStateDir, '/private/tmp/state');
   assert.equal(loadConnectionConfig({ ...env, DOCMOST_SYNC_ROOT: ' ', DOCMOST_SYNC_STATE_DIR: '' }).syncRoot, undefined);
+  assert.equal(loadConnectionConfig({ ...env, DOCMOST_SYNC_STATE_DIR: '/private/tmp/state' }).syncRoot, undefined, 'private service state alone does not enable the MD watcher');
   for (const overrides of [
     { DOCMOST_SYNC_ROOT: '/private/tmp/source' },
-    { DOCMOST_SYNC_STATE_DIR: '/private/tmp/state' },
     { DOCMOST_SYNC_ROOT: 'source', DOCMOST_SYNC_STATE_DIR: '/private/tmp/state' },
     { DOCMOST_SYNC_ROOT: '/private/tmp/source', DOCMOST_SYNC_STATE_DIR: 'state' },
     { DOCMOST_SYNC_ROOT: '/private/tmp/source', DOCMOST_SYNC_STATE_DIR: '/private/tmp/source' },

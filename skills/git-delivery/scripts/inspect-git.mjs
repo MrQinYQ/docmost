@@ -9,13 +9,14 @@ try {
     if (!['--repo', '--commit'].includes(args[i]) || options[args[i]] !== undefined || !args[i + 1]) throw Error();
     options[args[i]] = args[i + 1];
   }
-  if (!options['--repo'] || (options['--commit'] && !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(options['--commit']))) throw Error();
-  const root = realpathSync(resolve(options['--repo']));
+  if (options['--commit'] && !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(options['--commit'])) throw Error();
+  let current = realpathSync(resolve(options['--repo'] ?? process.cwd()));
   const env = { ...process.env, GIT_NO_REPLACE_OBJECTS: '1', GIT_LITERAL_PATHSPECS: '1', GIT_TERMINAL_PROMPT: '0', GIT_OPTIONAL_LOCKS: '0' };
   for (const key of Object.keys(env)) if (/^GIT_(?:DIR|WORK_TREE|COMMON_DIR|INDEX_FILE|NAMESPACE|OBJECT_DIRECTORY|ALTERNATE_OBJECT_DIRECTORIES|CONFIG_PARAMETERS|CONFIG_COUNT|CONFIG_KEY_\d+|CONFIG_VALUE_\d+)$/.test(key)) delete env[key];
   const git = (...input) => execFileSync('git', ['-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null', ...input],
-    { cwd: root, env, timeout: 30000, maxBuffer: 2_000_000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-  const head = git('rev-parse', '--verify', 'HEAD').trim();
+    { cwd: current, env, timeout: 30000, maxBuffer: 2_000_000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  const root = realpathSync(git('rev-parse', '--path-format=absolute', '--show-toplevel').trim()); current = root;
+  let head = null; try { head = git('rev-parse', '--verify', 'HEAD').trim(); } catch { /* Unborn repository. */ }
   let branch = null; try { branch = git('symbolic-ref', '-q', 'HEAD').trim(); } catch { /* Detached HEAD has no branch. */ }
   const changes = { staged: [], unstaged: [], untracked: [] };
   const records = git('status', '--porcelain=v1', '-z', '--untracked-files=all').split('\0');
@@ -37,7 +38,7 @@ try {
     const entries = diff.split('\0');
     for (let i = 0; i + 1 < entries.length; i += 2) if (entries[i + 1].endsWith('.md')) documents.push({ status: entries[i], path: entries[i + 1] });
   }
-  const commits = git('log', '-6', '--format=%H%x09%s').trim().split('\n').filter(Boolean).map(line => ({ oid: line.slice(0, line.indexOf('\t')), subject: line.slice(line.indexOf('\t') + 1) }));
+  const commits = head ? git('log', '-6', '--format=%H%x09%s').trim().split('\n').filter(Boolean).map(line => ({ oid: line.slice(0, line.indexOf('\t')), subject: line.slice(line.indexOf('\t') + 1) })) : [];
   const mergeHead = git('rev-parse', '--git-path', 'MERGE_HEAD').trim();
   process.stdout.write(JSON.stringify({ root, head, branch, changes, documents, commits, mergeInProgress: existsSync(resolve(root, mergeHead)) }) + '\n');
 } catch {
