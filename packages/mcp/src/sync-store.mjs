@@ -2,19 +2,13 @@ import { constants } from 'node:fs';
 import { lstat, mkdir, open, readdir, rename, unlink } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { isAbsolute, join, parse, resolve, sep } from 'node:path';
-import { setTimeout as delay } from 'node:timers/promises';
 import { ApiError } from './errors.mjs';
 import { absoluteDirectory, owns, sameFile, digest } from './sync-files.mjs';
 
 const fail = () => new ApiError('INVALID_STATE', 'Sync storage must use owned private non-symlink directories (0700) and regular files (0600).');
 const safeDir = info => owns(info) && info.isDirectory() && (info.mode & 0o777) === 0o700;
 const safeFile = info => owns(info) && info.isFile() && (info.mode & 0o777) === 0o600 && info.nlink === 1;
-const validOwner = value => Number.isSafeInteger(value?.pid) && value.pid > 0
-  && typeof value.nonce === 'string' && value.nonce.length > 0 && value.nonce.length <= 128;
-const alive = pid => {
-  try { process.kill(pid, 0); return true; }
-  catch (error) { if (error.code === 'ESRCH') return false; if (error.code === 'EPERM') return true; throw fail(); }
-};
+const conflict = () => new ApiError('CONFLICT', 'The sync record changed in another client. Read the latest status and resolve the conflicting content before retrying.');
 
 async function makeDirectory(path) {
   if (!isAbsolute(path) || resolve(path) !== path) throw fail();
@@ -25,7 +19,7 @@ async function makeDirectory(path) {
     try { info = await lstat(current); }
     catch (error) {
       if (error.code !== 'ENOENT') throw fail();
-      await mkdir(current, { mode: 0o700 });
+      await mkdir(current, { mode: 0o700 }).catch(error => { if (error.code !== 'EEXIST') throw error; });
       info = await lstat(current);
       if (!safeDir(info)) throw fail();
     }
@@ -39,7 +33,7 @@ export async function createSyncStore(path, { readOnly = false } = {}) {
   try { rootInfo = await absoluteDirectory(path); }
   catch (error) { if (readOnly && error.code === 'ENOENT') return { load: async () => [] }; throw fail(); }
   if (!safeDir(rootInfo)) throw fail();
-  const dirs = { bindings: join(path, 'bindings'), leases: join(path, 'leases'), snapshots: join(path, 'snapshots'), history: join(path, 'history'), operations: join(path, 'operations') };
+  const dirs = { bindings: join(path, 'bindings'), snapshots: join(path, 'snapshots'), history: join(path, 'history') };
   if (!readOnly) for (const dir of Object.values(dirs)) await makeDirectory(dir);
   const dirInfo = {};
   for (const [name, dir] of Object.entries(dirs)) {
@@ -54,9 +48,10 @@ export async function createSyncStore(path, { readOnly = false } = {}) {
       if (!safeDir(info) || !sameFile(rootInfo, info) || !safeDir(child) || !sameFile(dirInfo[name], child)) throw fail();
     } catch { throw fail(); }
   }
-  async function read(pathname, name, raw = false, snapshot = false) {
+  const baselines = new Map();
+  async function read(pathname, name, raw = false, snapshot = true) {
     await check(name);
-    const concurrent = snapshot || name === 'operations';
+    const concurrent = snapshot;
     // An atomically replaced/unlinked file may have zero links after open.
     // Its handle still contains a complete private snapshot. Hard links remain
     // forbidden; durable mutation paths keep the stronger inode checks.
@@ -72,7 +67,7 @@ export async function createSyncStore(path, { readOnly = false } = {}) {
       const text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: raw }).decode(bytes);
       if (Buffer.byteLength(text) > 1_000_000) throw fail();
       await check(name);
-      if (!snapshot && name !== 'operations' && !sameFile(opened, await lstat(pathname))) throw fail();
+      if (!snapshot && !sameFile(opened, await lstat(pathname))) throw fail();
       return raw ? text : JSON.parse(text);
     } catch (error) { if (error.code === 'ENOENT') throw error; throw fail(); }
     finally { await handle?.close(); }
@@ -83,6 +78,7 @@ export async function createSyncStore(path, { readOnly = false } = {}) {
     const path = join(dirs[name], filename);
     try { if (!safeFile(await lstat(path))) throw fail(); }
     catch (error) { if (error.code !== 'ENOENT') throw fail(); }
+    if (name === 'bindings') await assertCurrent(filename);
     const temp = join(dirs[name], `.${filename}.${randomUUID()}.tmp`);
     let handle;
     try {
@@ -91,59 +87,30 @@ export async function createSyncStore(path, { readOnly = false } = {}) {
       await handle.sync();
       await handle.close(); handle = undefined;
       await check(name);
+      if (name === 'bindings') await assertCurrent(filename);
       await rename(temp, path);
+      if (name === 'bindings') {
+        const expected = digest(JSON.stringify(value));
+        if (digest(JSON.stringify(await read(path, name))) !== expected) throw conflict();
+        baselines.set(filename, expected);
+      }
       const dir = await open(dirs[name], constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
       try { await dir.sync(); } finally { await dir.close(); }
-    } catch { throw fail(); }
+    } catch (error) { if (error.code === 'CONFLICT') throw error; if (name === 'bindings' && error.code === 'ENOENT') throw conflict(); throw fail(); }
     finally { await handle?.close(); await unlink(temp).catch(() => {}); }
   }
   function snapshotName(bindingId, hash) {
     if (!/^[0-9a-f-]{36}$/.test(bindingId) || !/^[0-9a-f]{64}$/.test(hash)) throw fail();
     return `${bindingId}-${hash}.md`;
   }
-  async function participants() {
-    await check('operations');
-    const names = (await readdir(dirs.operations)).filter(name => !name.startsWith('.'));
-    if (names.length > 5000 || names.some(name => !/^[0-9a-f-]{36}\.json$/.test(name))) throw fail();
-    const values = [];
-    for (const name of names) {
-      const pathname = join(dirs.operations, name); let value;
-      try { value = await read(pathname, 'operations'); } catch (e) { if (e.code === 'ENOENT') continue; throw e; }
-      if (!validOwner(value) || name !== value.nonce + '.json' || Object.keys(value).sort().join(',') !== 'nonce,pid,ticket'
-        || (value.ticket !== null && !(typeof value.ticket === 'string' && /^[1-9][0-9]{0,31}$/.test(value.ticket)))) throw fail();
-      if (!alive(value.pid)) {
-        // This UUID path belongs only to the exited participant. Unlike a
-        // shared lock pathname, it can never be replaced by the next owner.
-        await unlink(pathname).catch(e => { if (e.code !== 'ENOENT') throw e; });
-      } else values.push(value);
-    }
-    return values;
-  }
-  async function acquireOperation(signal, { timeoutMs = 30000 } = {}) {
-    const owner = { pid: process.pid, nonce: randomUUID(), ticket: null }, filename = owner.nonce + '.json';
-    const pathname = join(dirs.operations, filename), deadline = Date.now() + timeoutMs;
-    try {
-      signal.throwIfAborted(); await atomicWrite(filename, owner, 'operations');
-      const live = await participants();
-      owner.ticket = (live.reduce((max, value) => value.ticket && BigInt(value.ticket) > max ? BigInt(value.ticket) : max, 0n) + 1n).toString();
-      await atomicWrite(filename, owner, 'operations');
-      while (true) {
-        signal.throwIfAborted();
-        const blocked = (await participants()).some(other => other.nonce !== owner.nonce && (other.ticket === null
-          || BigInt(other.ticket) < BigInt(owner.ticket) || (other.ticket === owner.ticket && other.nonce < owner.nonce)));
-        if (!blocked) return { pathname, ...owner };
-        if (Date.now() >= deadline) throw new ApiError('LEASE_BUSY', 'Another synchronization operation is still running. Retry after it finishes; do not remove its locks.');
-        await delay(25, undefined, { signal });
-      }
-    } catch (error) { await unlink(pathname).catch(e => { if (e.code !== 'ENOENT') throw e; }); throw error; }
+  async function assertCurrent(filename) {
+    let actual = null;
+    try { actual = digest(JSON.stringify(await read(join(dirs.bindings, filename), 'bindings'))); }
+    catch (error) { if (error.code !== 'ENOENT') throw error; }
+    if (actual !== (baselines.get(filename) ?? null)) throw conflict();
   }
   return {
-    acquireOperation,
-    async releaseOperation(owner) {
-      const value = await read(owner.pathname, 'operations');
-      if (value.pid !== owner.pid || value.nonce !== owner.nonce) throw fail();
-      await unlink(owner.pathname);
-    },
+    assertCurrent: bindingId => assertCurrent(`${bindingId}.json`),
     async saveSnapshot(bindingId, { hash, content }) {
       const filename = snapshotName(bindingId, hash);
       if (typeof content !== 'string' || Buffer.byteLength(content) > 1_000_000 || digest(content) !== hash) throw fail();
@@ -159,25 +126,11 @@ export async function createSyncStore(path, { readOnly = false } = {}) {
       try { await read(pathname, 'snapshots', true); await unlink(pathname); }
       catch (error) { if (error.code !== 'ENOENT') throw error; }
     },
-    async pruneSnapshots(bindingId, retained) {
-      if (!/^[0-9a-f-]{36}$/.test(bindingId) || retained.some(hash => !/^[0-9a-f]{64}$/.test(hash))) throw fail();
-      await check('snapshots');
-      const files = (await readdir(dirs.snapshots)).filter(name => name.startsWith(`${bindingId}-`) && !name.startsWith('.'));
-      if (files.length > 5000) throw fail();
-      for (const name of files) {
-        const match = name.match(/^[0-9a-f-]{36}-([0-9a-f]{64})\.md$/);
-        if (!match) throw fail();
-        if (retained.includes(match[1])) continue;
-        const pathname = join(dirs.snapshots, name);
-        await read(pathname, 'snapshots', true); await unlink(pathname);
-      }
-    },
     async archiveMirror(binding) {
       if (!binding.mirror) return;
       if (!/^[0-9a-f-]{36}$/.test(binding.bindingId)) throw fail();
       const key = digest(`${binding.origin}|${binding.workspaceId}|${binding.pageId}`);
-      // A later association to the same page must not erase the task fence
-      // retained when an earlier association was explicitly removed.
+      // Keep unbound task history for diagnosis, without reserving its namespace.
       await atomicWrite(`${key}-${binding.bindingId}.json`, { bindingId: binding.bindingId, origin: binding.origin, workspaceId: binding.workspaceId, pageId: binding.pageId, mirror: binding.mirror, active: false }, 'history');
     },
     async loadMirrorHistory() {
@@ -198,61 +151,33 @@ export async function createSyncStore(path, { readOnly = false } = {}) {
       }
       return values;
     },
-    async load({ snapshot = false } = {}) {
+    async load({ snapshot = true, track = false } = {}) {
       if (!dirInfo.bindings) return [];
       await check('bindings');
       const files = (await readdir(dirs.bindings)).filter(name => !name.startsWith('.'));
       if (files.length > 50 || files.some(name => !/^[0-9a-f-]{36}\.json$/.test(name))) throw fail();
       const values = [];
       for (const filename of files) {
-        try { values.push({ filename, value: await read(join(dirs.bindings, filename), 'bindings', false, snapshot) }); }
+        try {
+          const value = await read(join(dirs.bindings, filename), 'bindings', false, snapshot);
+          if (track) baselines.set(filename, digest(JSON.stringify(value)));
+          values.push({ filename, value });
+        }
         catch (error) { if (!(snapshot && error.code === 'ENOENT')) throw error; }
       }
+      if (track) for (const filename of baselines.keys()) if (!values.some(item => item.filename === filename)) baselines.delete(filename);
       return values;
     },
     save: value => atomicWrite(`${value.bindingId}.json`, value),
     async remove(bindingId) {
       await check('bindings');
       const pathname = join(dirs.bindings, `${bindingId}.json`);
-      await read(pathname, 'bindings');
-      await unlink(pathname);
-    },
-    async acquire({ origin, workspaceId, pageId }, signal, { recoverDead = false } = {}) {
-      await check('leases');
-      signal.throwIfAborted();
-      const pathname = join(dirs.leases, `${digest(`${origin}|${workspaceId}|${pageId}`)}.json`);
-      const value = { pid: process.pid, nonce: randomUUID() };
-      let handle;
       try {
-        handle = await open(pathname, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
-        await handle.writeFile(JSON.stringify(value));
-        await handle.sync();
-        await handle.close(); handle = undefined;
-        await check('leases');
-        return { pathname, ...value };
-      } catch (error) {
-        if (error.code === 'EEXIST') {
-          // Recovery is allowed only inside the ledger operation mutex.
-          if (recoverDead) {
-            const previous = await read(pathname, 'leases');
-            if (validOwner(previous) && !alive(previous.pid)) { await unlink(pathname); return this.acquire({ origin, workspaceId, pageId }, signal, { recoverDead: true }); }
-          }
-          throw new ApiError('LEASE_BUSY', 'Another live or unverified sync process owns this page. Let its operation finish or reconnect the older client; do not remove its lock.');
-        }
-        throw fail();
-      } finally { await handle?.close(); }
-    },
-    async assertLease(lease) {
-      let value;
-      try { value = await read(lease.pathname, 'leases'); }
-      catch (error) { if (error.code !== 'ENOENT') throw error; }
-      if (!value || value.pid !== lease.pid || value.nonce !== lease.nonce)
-        throw new ApiError('LEASE_BUSY', 'This process no longer owns the page lease.');
-    },
-    async release(lease) {
-      if (!lease) return;
-      let value; try { value = await read(lease.pathname, 'leases'); } catch (error) { if (error.code === 'ENOENT') return; throw error; }
-      if (value.pid === lease.pid && value.nonce === lease.nonce) await unlink(lease.pathname);
+        await assertCurrent(`${bindingId}.json`);
+        await read(pathname, 'bindings');
+        await unlink(pathname);
+      } catch (error) { if (error.code === 'ENOENT') throw conflict(); throw error; }
+      baselines.delete(`${bindingId}.json`);
     },
   };
 }

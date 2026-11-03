@@ -171,7 +171,7 @@ try {
       const scoped = await p.rpc.tool('get_git_document_status', { repositoryRoot: p.repo }); assert.deepEqual(scoped.bindings.map(x => x.bindingId), [p.bindingId]);
       report.multiProject = { sameProcess: true, processId: p.rpc.child.pid, sameLedger: true, noConfiguredGitRoot: true, mixedBatchRejectedWithoutWrites: true, otherCommit };
     });
-    await check('two live stdio processes release finite locks and reuse the newest Git baseline', async () => {
+    await check('two live stdio processes create no locks and reuse the newest Git baseline', async () => {
       const peer = await connect(p.env);
       try {
         const before = (await readPage(p.pageId)).content;
@@ -181,8 +181,8 @@ try {
         const updated = await peer.tool('publish_git_documents', args(p, p.a)); assert.equal(updated.documents[0].state, 'synced');
         const same = await p.rpc.tool('publish_git_documents', args(p, p.a)); assert.equal(same.documents[0].git.published.commit, p.a); assert.equal(same.documents[0].state, 'synced');
         assert.equal(peer.child.exitCode, null); assert.equal(p.rpc.child.exitCode, null);
-        assert.deepEqual(await readdir(join(p.state, 'leases')), []); assert.deepEqual(await readdir(join(p.state, 'operations')), []);
-        report.operationLocks = { bothProcessesConnected: true, idlePageLocks: 0, idleOperationTickets: 0, latestBaselineReused: true };
+        assert.deepEqual(await readdir(join(p.state, 'leases')).catch(e => { if (e.code === 'ENOENT') return []; throw e; }), []); assert.deepEqual(await readdir(join(p.state, 'operations')).catch(e => { if (e.code === 'ENOENT') return []; throw e; }), []);
+        report.lockFreeSync = { bothProcessesConnected: true, idlePageLocks: 0, idleOperationTickets: 0, latestBaselineReused: true };
       } finally { await close(peer); }
     });
     await check('legacy default-root invocation then rootless restart preserves both project bindings', async () => {

@@ -36,7 +36,7 @@ node /absolute/path/docmost-mcp-source/packages/mcp/dist/index.mjs --help
 
 ## 用户本人在终端登录
 
-`DOCMOST_SESSION_FILE` 必须为仓库外的私有 JSON 绝对路径。建议为 `~/.config/docmost/session.json` 的实际绝对路径；shell 可用 `"$HOME/.config/docmost/session.json"` 展开，客户端配置须写绝对路径。CLI 管理私有目录和会话文件，POSIX 下目录 `0700`、当前用户所有的普通文件 `0600`，不支持符号链接。不要手写会话 JSON，也不要创建空文件供登录覆盖。
+`DOCMOST_SESSION_FILE` 必须为仓库外的私有 JSON 绝对路径。建议为 `~/.config/docmost/session.json` 的实际绝对路径；shell 可用 `"$HOME/.config/docmost/session.json"` 展开，客户端配置须写绝对路径。CLI 管理私有目录和会话文件，POSIX 下目录 `0700`、当前用户所有的普通文件 `0600`，不支持符号链接。 会话 CLI 在同一私有位置维护 `<会话文件>.sessions/` 的凭据代际副本与撤销标记，用于防止并发登出误删后续登录；它不是锁，不阻塞其他操作。登出删除对应凭据副本，撤销标记不含 Token。保留原会话路径与这个目录，不手工编辑或分享。不要手写会话 JSON，也不要创建空文件供登录覆盖。
 
 把替换好实际部署、Node 和源码路径的命令交给用户，由用户在自己的真实本机终端执行；登录无需默认空间：
 
@@ -205,4 +205,4 @@ node /absolute/path/docmost-mcp-source/packages/mcp/dist/index.mjs --check-knowl
 
 从同版本仓库的 `skills/git-delivery` 安装到 `~/.codex/skills/git-delivery`，保留既有 Skill 并在替换前备份。重建 MCP 并重启连接，实际发现五个 Git 扩展工具；先查询状态，再明确转换原来源。配置不自动绑定、上传或安装 hook。中文引导见 `docs/git-delivery.md`。没有知识库时选择 provider=none；选 OpenViking 时沿用上文地址、私有 Key 文件和个人/共享向导。
 
-升级操作锁版本时保留原账本和关联；正常重连仍运行旧代码的 MCP 连接一次，使其释放旧版生命周期锁。新版工作结束即释放，不要求每次任务后关闭客户端或启动 daemon。不要用另一个写实例做只读安装检查；优先实际连接的只读工具或按引导使用只读模式。
+升级无锁版本时保留原配置、凭据、账本和关联，构建后正常重连一次以加载新代码。新版不创建或等待锁，遗留的 leases/operations 或会话 .lock 不再参与判断；不清空账本来处理冲突。安装检查优先实际连接的只读工具或按引导使用只读模式，不要求关闭 AI 客户端或启动 daemon。

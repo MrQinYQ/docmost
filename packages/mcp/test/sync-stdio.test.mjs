@@ -522,7 +522,7 @@ test('configured read-only stdio adds status only and cannot watch or upload sav
   assert.equal(fixture.updates().length, 0);
 });
 
-test('two connected watcher processes coordinate one save and keep no idle page lease', { timeout: 10000 }, async t => {
+test('two lock-free watcher processes perform one CAS write or report a content conflict', { timeout: 10000 }, async t => {
   const { rpc, fixture, filePath, stateDir, start } = await harness(t);
   const binding = await bind(rpc);
   const duplicate = await start();
@@ -531,8 +531,11 @@ test('two connected watcher processes coordinate one save and keep no idle page 
   await eventually(() => fixture.content === '# Shared watcher save\n', 'coordinated watchers did not upload');
   await delay(1300);
   assert.equal(fixture.updates().length, 1, 'one save must produce exactly one page replacement');
-  assert.equal((await status(duplicate, binding.bindingId)).error, undefined);
-  assert.deepEqual(await readdir(join(stateDir, 'leases')), []);
+  const observed = await status(duplicate, binding.bindingId);
+  assert.ok(!observed.error || observed.error.code === 'CONFLICT');
+  if (observed.error) assert.equal(observed.state, 'conflict');
+  assert.equal(toolData(await duplicate.call('get_markdown_sync_status')).state, 'running');
+  assert.deepEqual(await readdir(join(stateDir, 'leases')).catch(e => { if (e.code === 'ENOENT') return []; throw e; }), []);
 });
 
 test('stdin EOF and SIGTERM stop the configured watcher and exit within three seconds', { timeout: 16000 }, async t => {

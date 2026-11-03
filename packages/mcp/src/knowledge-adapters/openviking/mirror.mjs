@@ -98,8 +98,8 @@ export function mirrorStatus(binding) {
 }
 
 /** Durable per-page protocol, called under the binding's serial queue.
- * Remote writes have no CAS or business idempotency key. Exclusive mirror
- * ownership and read/task reconciliation reduce races but cannot make the two
+ * Remote writes have no CAS or business idempotency key. Per-page
+ * read/task reconciliation reduces races but cannot make the two
  * deployments atomic or prevent an external writer racing a successful read.
  */
 export function createMirror(config, { client, post, store, persist, signal, deletionReady = () => true }) {
@@ -222,6 +222,9 @@ export function createMirror(config, { client, post, store, persist, signal, del
     job.phase = `${phase}_submitting`; await persist(binding);
     let submitted;
     if (recovering) {
+      // Shared ancestor indexes may have been submitted by a sibling page.
+      // An uncorrelated task ID cannot confirm this page's missing response.
+      if (job.indexUris && job.indexCursor > 0) throw fail('OV_UNCONFIRMED');
       if (!Array.isArray(job.priorTaskIds)) throw fail('OV_UNCONFIRMED');
       const tasks = (await client.tasks(uri, signal)).filter(task => !job.priorTaskIds.includes(task.taskId));
       if (tasks.length !== 1) throw fail('OV_UNCONFIRMED');
@@ -247,7 +250,7 @@ export function createMirror(config, { client, post, store, persist, signal, del
       if (entry.isDir) { if (derivedFiles.has(entry.name)) throw fail('OV_CONFLICT'); continue; }
       if (derivedFiles.has(entry.name)) continue;
       if (entry.name !== 'document.md') throw fail('OV_CONFLICT');
-      const owners = (await store.load()).map(item => item.value).filter(owner => owner.enabled
+      const owners = (await store.load({ track: false })).map(item => item.value).filter(owner => owner.enabled
         && owner.origin === binding.origin && owner.workspaceId === binding.workspaceId && owner.userId === binding.userId
         && sameTarget(owner.mirror?.target, binding.mirror.target));
       let confirmed;
@@ -360,7 +363,7 @@ export function createMirror(config, { client, post, store, persist, signal, del
       // Already submitted index jobs may be observed while the source is paused.
       if (!['indexing', 'pruning'].includes(job.phase) && !checkedSuccessor) await docmost(binding, job);
       if (job.kind === 'body' && job.phase === 'ready') {
-        const owners = [...(store.load ? await store.load() : []), ...(store.loadMirrorHistory ? await store.loadMirrorHistory() : [])];
+        const owners = [...(store.load ? await store.load({ track: false }) : []), ...(store.loadMirrorHistory ? await store.loadMirrorHistory() : [])];
         const claims = [binding, ...owners.map(item => item.value)].filter(owner => sameTarget(owner.mirror?.target, mirror.target))
           .flatMap(owner => { validateMirror(owner.mirror); return owner.mirror.nodes ?? []; });
         const layout = await resolveMirrorLayout({ rootUri: mirror.target.rootUri, origin: binding.origin, workspaceId: binding.workspaceId, pageId: binding.pageId,
@@ -394,12 +397,8 @@ export function createMirror(config, { client, post, store, persist, signal, del
       if (job.phase === 'indexing' || job.phase === 'pruning') {
         const task = await client.task(job.taskId, signal);
         if (activeTask(task)) return;
-        if (!deletingSuccessor && task.status === 'failed' && task.failureCode === 'OV_TREE_BUSY') {
-          job.phase = job.phase === 'indexing' ? 'submit' : 'prune_submit';
-          delete job.taskId; delete job.priorTaskIds;
-          mirror.state = 'retrying'; mirror.errorCode = 'OV_TREE_BUSY'; mirror.retryAt = Date.now() + 1000;
-          await persist(binding); return;
-        }
+        if (!deletingSuccessor && task.status === 'failed' && ['OV_TREE_BUSY', 'OV_CONFLICT'].includes(task.failureCode))
+          throw fail('OV_CONFLICT');
         if (!(deletingSuccessor && job.phase === 'indexing' && ['completed', 'failed', 'cancelled'].includes(task.status))
           && (task.status !== 'completed' || task.failedRecords !== 0 || task.unsupportedRecords > 0)) throw fail('OV_PROCESSING_FAILED');
         if (job.phase === 'indexing') {

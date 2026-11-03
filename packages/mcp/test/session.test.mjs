@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, writeFile, chmod, symlink, rm, stat, readFile, mkdir } from 'node:fs/promises';
+import { mkdtemp, writeFile, chmod, symlink, rm, stat, readFile, mkdir, unlink, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { decodeSessionToken, loadSession, saveSession, removeSession, loginSession, logoutSession } from '../src/session.mjs';
@@ -141,11 +141,28 @@ test('parallel saves publish only one session and do not overwrite an active win
   const second = record({ token: jwt({ sessionId: otherId }), sessionId: otherId });
   const results = await Promise.allSettled([saveSession(file, record()), saveSession(file, second)]);
   assert.equal(results.filter(result => result.status === 'fulfilled').length, 1);
-  assert.ok(['SESSION_BUSY', 'SESSION_EXISTS'].includes(results.find(result => result.status === 'rejected').reason.code));
+  assert.equal(results.find(result => result.status === 'rejected').reason.code, 'SESSION_EXISTS');
   assert.ok([sessionId, otherId].includes((await loadSession(file, origin)).sessionId));
   await writeFile(`${file}.lock`, 'other-process', { flag: 'wx', mode: 0o600 });
-  await assert.rejects(saveSession(file, record()), { code: 'SESSION_BUSY' });
+  await removeSession(file, origin);
+  const freshId = '00000000-0000-4000-8000-000000000009';
+  await saveSession(file, record({ token: jwt({ sessionId: freshId }), sessionId: freshId }));
+  assert.equal((await loadSession(file, origin)).sessionId, freshId);
   assert.equal(await readFile(`${file}.lock`, 'utf8'), 'other-process');
+});
+
+test('a late unlink of the compatibility file cannot discard a newer saved session generation', async t => {
+  const file = await privateFile(t);
+  await saveSession(file, record());
+  await removeSession(file, origin, { expectedSessionId: sessionId });
+  await saveSession(file, record({ token: jwt({ sessionId: otherId }), sessionId: otherId }));
+  await unlink(file); // A delayed outgoing operation removed the reused pathname.
+  assert.equal((await loadSession(file, origin)).sessionId, otherId);
+  await assert.rejects(removeSession(file, origin, { expectedSessionId: sessionId }), { code: 'SESSION_CHANGED' });
+  assert.equal((await loadSession(file, origin)).sessionId, otherId);
+  await removeSession(file, origin, { expectedSessionId: otherId });
+  await assert.rejects(loadSession(file, origin), { code: 'SESSION_NOT_FOUND' });
+  assert.ok(!(await readdir(`${file}.sessions`)).some(name => name.endsWith('.json')), 'logout removes its credential generation');
 });
 
 test('remove accepts expired own record but preserves malformed and wrong-origin files', async t => {
@@ -253,7 +270,8 @@ test('session publication rejects accidental credential fields and leaves no tem
   await assert.rejects(loadSession(file, origin), { code: 'SESSION_NOT_FOUND' });
   await saveSession(file, record());
   const { readdir } = await import('node:fs/promises');
-  assert.deepEqual(await readdir(join(file, '..')), ['session.json']);
+  assert.deepEqual(await readdir(join(file, '..')), ['session.json', 'session.json.sessions']);
+  assert.ok((await readdir(`${file}.sessions`)).every(name => !name.startsWith('.')));
 });
 
 test('login refuses unpinned transport and invalid credentials before making any request', async () => {

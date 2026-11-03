@@ -298,8 +298,8 @@ run('completed reindex tasks require an explicit failure counter before completi
 
 run('only an exact terminal lock timeout error is classified as safe namespace contention', async () => fixture(async ({ config }) => {
   for (const [error, status, expected] of [
-    ['lock acquire timed out after 0ms', 'failed', 'OV_TREE_BUSY'],
-    ['lock acquire timed out after 1200ms', 'failed', 'OV_TREE_BUSY'],
+    ['lock acquire timed out after 0ms', 'failed', 'OV_CONFLICT'],
+    ['lock acquire timed out after 1200ms', 'failed', 'OV_CONFLICT'],
     ['private-prefix lock acquire timed out after 0ms', 'failed', undefined],
     ['lock acquire timed out after 0ms; private suffix', 'failed', undefined],
     ['Model request failed', 'failed', undefined],

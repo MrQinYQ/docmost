@@ -19,7 +19,7 @@ const oldHash = digest(oldSource), newHash = digest(newSource);
 const oldRevision = digest('old document revision'), newRevision = digest('new document revision');
 const docOrigin = 'https://docmost.example.test';
 
-async function fixture({ prune = true, deletionReady } = {}) {
+async function fixture({ prune = false, deletionReady } = {}) {
   const config = { origin: docOrigin, openViking: { origin: 'https://ov.example.test', rootUri } };
   const target = { origin: config.openViking.origin, accountId: 'personal', userId: 'test', rootUri };
   const binding = { bindingId: ids.binding, origin: docOrigin, pageId: ids.page, spaceId: ids.space, workspaceId: ids.workspace, userId: ids.user,
@@ -106,7 +106,7 @@ test('preparing or discarding cannot delete snapshots still referenced by the la
   assert.equal(f.binding.mirror.pending.hash, oldHash, 'a confirmed job waits until its successor is confirmed');
   assert.equal(f.binding.mirror.next.hash, newHash);
   await f.mirror.discard(f.binding, newHash);
-  assert.equal(f.snapshots.get(newHash), newSource, 'only the successful atomic ledger save may release a snapshot');
+  assert.equal(f.snapshots.get(newHash), newSource, 'a saved ledger must not reclaim another process snapshot');
   assert.equal(f.events.some(event => event.type === 'removeSnapshot'), false);
 });
 
@@ -200,6 +200,19 @@ test('an unknown reindex recovery rejects all task IDs recorded before submissio
   assert.equal(f.events.some(event => event.type === 'reindex'), false);
 });
 
+test('an unknown shared-ancestor submission cannot adopt a sibling page task', async () => {
+  const f = await fixture({ prune: false }), ancestor = f.layout.pageDirectory.slice(0, f.layout.pageDirectory.lastIndexOf('/'));
+  f.resources.set(f.layout.uri, oldSource);
+  f.tasks.set('sibling-task', { taskId: 'sibling-task', uri: ancestor, status: 'completed', failedRecords: 0 });
+  f.binding.mirror.pending = { ...f.body(oldHash, oldRevision, 'submit_submitting', f.layout.uri),
+    priorTaskIds: [], layoutVersion: 2, indexUris: [f.layout.pageDirectory, ancestor], indexCursor: 1 };
+  await f.mirror.process(f.binding);
+  assert.equal(f.binding.mirror.errorCode, 'OV_UNCONFIRMED');
+  assert.equal(f.binding.mirror.pending.taskId, undefined);
+  assert.equal(f.binding.mirror.pending.phase, 'submit_submitting');
+  assert.equal(f.events.some(event => event.type === 'reindex'), false);
+});
+
 test('explicit metadata relayout can cross a fixed space guard while the body remains verified', async () => {
   const f = await fixture();
   f.resources.set(f.layout.uri, oldSource);
@@ -285,16 +298,17 @@ test('a cancelling index is observed until terminal and is never restarted by re
   assert.equal(f.events.some(event => event.type === 'reindex'), false);
 });
 
-test('a recognised terminal namespace lock timeout retries only the index with bounded backoff', async () => {
+test('a remote namespace contention pauses with conflict until an explicit index retry', async () => {
   const f = await fixture();
   f.resources.set(f.layout.uri, oldSource);
-  f.tasks.set('locked-index', { taskId: 'locked-index', uri: f.layout.pageDirectory, status: 'failed', failureCode: 'OV_TREE_BUSY' });
+  f.tasks.set('locked-index', { taskId: 'locked-index', uri: f.layout.pageDirectory, status: 'failed', failureCode: 'OV_CONFLICT' });
   f.binding.mirror.pending = { ...f.body(oldHash, oldRevision, 'indexing', f.layout.uri), taskId: 'locked-index' };
   await f.mirror.process(f.binding);
-  assert.equal(f.binding.mirror.pending.phase, 'submit');
-  assert.equal(f.binding.mirror.state, 'retrying'); assert.equal(f.binding.mirror.errorCode, 'OV_TREE_BUSY');
-  assert.ok(f.binding.mirror.retryAt > Date.now() && f.binding.mirror.retryAt <= Date.now() + 1500);
-  f.binding.mirror.retryAt = 0;
+  assert.equal(f.binding.mirror.pending.phase, 'indexing');
+  assert.equal(f.binding.mirror.state, 'blocked'); assert.equal(f.binding.mirror.errorCode, 'OV_CONFLICT');
+  assert.equal(f.binding.mirror.retryAt, undefined);
+  assert.equal(f.events.filter(event => event.type === 'reindex').length, 0);
+  await f.mirror.retry(f.binding);
   await settle(f);
   assert.equal(f.binding.mirror.state, 'synced');
   assert.equal(f.events.some(event => event.type === 'write'), false);

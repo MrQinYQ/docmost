@@ -234,7 +234,7 @@ export function createDocmostServer(config, { fetchImpl, syncManager } = {}) {
         input = { ...input, pageId: canonicalId };
         ticket = await syncManager.capturePageUpdate({ pageId: canonicalId });
       } catch (error) {
-        if (error.code === 'SAVE_PENDING') throw error;
+        if (['SAVE_PENDING', 'CONFLICT'].includes(error.code)) throw error;
         ticket = { state: 'blocked', error: { code: 'KB_PENDING', message: 'Knowledge update could not be prepared. Inspect its status after the Docmost write.' } };
       }
     }

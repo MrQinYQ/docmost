@@ -35,7 +35,7 @@ function createRuntime(connection, context) {
   const signal = context.signal ?? new AbortController().signal;
   const client = context.client ?? createOpenVikingClient(connection);
   const mirror = createMirror({ ...config, openViking: connection }, { client, post, store, persist, signal, deletionReady });
-  const tree = createMirrorTree({ config: { ...connection, readOnly: config.readOnly }, client, store, persist, signal, acquireLease: context.acquireLease });
+  const tree = createMirrorTree({ config: { ...connection, readOnly: config.readOnly }, client, store, persist, signal });
   return {
     mirror,
     tree,
@@ -43,7 +43,7 @@ function createRuntime(connection, context) {
       validateMirror(binding.mirror);
       const rootUri = binding.mirror?.target?.rootUri ?? connection?.rootUri ?? 'viking://user/local/resources/docmost-mcp';
       const target = binding.mirror?.target;
-      const owners = [...(store.load ? await store.load() : []), ...(store.loadMirrorHistory ? await store.loadMirrorHistory() : [])];
+      const owners = [...(store.load ? await store.load({ track: false }) : []), ...(store.loadMirrorHistory ? await store.loadMirrorHistory() : [])];
       const claims = [binding, ...owners.map(item => item.value)].filter(owner => target
         && ['origin', 'accountId', 'userId', 'rootUri'].every(key => target[key] === owner.mirror?.target?.[key]))
         .flatMap(owner => { validateMirror(owner.mirror); return owner.mirror.nodes ?? []; });

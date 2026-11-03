@@ -1,7 +1,7 @@
-import { constants } from 'node:fs';
-import { open, lstat, mkdir, rename, unlink } from 'node:fs/promises';
+import { constants, linkSync, unlinkSync } from 'node:fs';
+import { open, lstat, mkdir, unlink, readdir } from 'node:fs/promises';
 import { dirname, basename, join, isAbsolute } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import { z } from 'zod';
 import { AuthError, ConfigError } from './errors.mjs';
 import { createApiClient } from './api.mjs';
@@ -67,7 +67,7 @@ async function privateParent(file, create = false) {
   }
 }
 
-export async function loadSession(file, origin, { allowExpired = false } = {}) {
+async function loadRecordFile(file, origin, { allowExpired = false } = {}) {
   await privateParent(file);
   let handle;
   try {
@@ -98,32 +98,53 @@ export async function loadSession(file, origin, { allowExpired = false } = {}) {
   } finally { await handle?.close(); }
 }
 
-async function locked(file, operation, failureCode) {
-  const lock = `${file}.lock`;
-  let handle;
-  let identity;
-  try {
-    try { handle = await open(lock, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0), 0o600); }
-    catch (error) {
-      if (error.code === 'EEXIST') throw new AuthError('SESSION_BUSY', 'Another operation holds the session-file lock. Retry after it finishes; existing locks are never stolen.');
-      throw error;
-    }
-    identity = await handle.stat();
-    return await operation();
-  } catch (error) {
-    if (error instanceof AuthError) throw error;
-    throw new AuthError(failureCode, 'Cannot update private session storage. Check the path, owner and permissions.');
-  } finally {
-    await handle?.close();
-    if (identity) {
-      try {
-        const current = await lstat(lock);
-        if (current.dev === identity.dev && current.ino === identity.ino) await unlink(lock);
-      } catch (error) {
-        if (error.code !== 'ENOENT') throw new AuthError(failureCode, 'Cannot release the private session-file lock.');
-      }
-    }
+const generationKey = record => createHash('sha256').update(record.token).digest('hex');
+const sessionDirectory = file => `${file}.sessions`;
+
+async function journalEntries(file) {
+  const dir = sessionDirectory(file);
+  try { checkPrivate(await lstat(dir), 0o700, true); }
+  catch (error) { if (error.code === 'ENOENT') return []; throw error; }
+  const names = await readdir(dir);
+  if (names.length > 5000 || names.some(name => !name.startsWith('.')
+    && !/^[0-9a-f]{64}\.(json|revoked)$/.test(name))) throw unsafe();
+  for (const name of names.filter(name => !name.startsWith('.'))) checkPrivate(await lstat(join(dir, name)), 0o600);
+  return names;
+}
+
+export async function loadSession(file, origin, { allowExpired = false } = {}) {
+  await privateParent(file);
+  let canonical;
+  try { canonical = await loadRecordFile(file, origin, { allowExpired: true }); }
+  catch (error) { if (error.code !== 'SESSION_NOT_FOUND') throw error; }
+  const names = await journalEntries(file), candidates = new Map();
+  if (canonical && !names.includes(`${generationKey(canonical)}.revoked`)) candidates.set(generationKey(canonical), canonical);
+  for (const name of names.filter(name => name.endsWith('.json') && !names.includes(name.slice(0, -5) + '.revoked'))) {
+    let record;
+    try { record = await loadRecordFile(join(sessionDirectory(file), name), origin, { allowExpired: true }); }
+    catch (error) { if (error.code === 'SESSION_NOT_FOUND') continue; throw error; }
+    if (name !== `${generationKey(record)}.json`) throw unsafe();
+    candidates.set(generationKey(record), record);
   }
+  const live = [...candidates.values()].filter(record => record.expiresAt > Date.now());
+  if (live.length > 1) throw new AuthError('SESSION_CHANGED', 'Concurrent logins saved different sessions. Preserve the files and choose the session to keep before reconnecting.');
+  const selected = live[0] ?? [...candidates.values()].sort((a, b) => b.expiresAt - a.expiresAt)[0];
+  if (!selected) throw new AuthError('SESSION_NOT_FOUND', 'No saved Docmost session. Run --login first.');
+  return validateRecord(selected, origin, { allowExpired });
+}
+
+async function publishGeneration(file, record) {
+  const dir = sessionDirectory(file);
+  await mkdir(dir, { recursive: true, mode: 0o700 });
+  checkPrivate(await lstat(dir), 0o700, true);
+  const target = join(dir, `${generationKey(record)}.json`), temp = join(dir, `.${randomUUID()}.tmp`);
+  let handle;
+  try {
+    handle = await open(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0), 0o600);
+    await handle.writeFile(JSON.stringify(record)); await handle.sync(); await handle.close(); handle = undefined;
+    try { linkSync(temp, target); unlinkSync(temp); }
+    catch (error) { if (error.code !== 'EEXIST') throw error; await loadRecordFile(target, record.origin, { allowExpired: true }); }
+  } finally { await handle?.close(); await unlink(temp).catch(error => { if (error.code !== 'ENOENT') throw error; }); }
 }
 
 export async function saveSession(file, record) {
@@ -131,11 +152,12 @@ export async function saveSession(file, record) {
   const contents = `${JSON.stringify(validated)}\n`;
   if (Buffer.byteLength(contents) > MAX_BYTES) throw invalid();
   await privateParent(file, true);
-  return locked(file, async () => {
+  try {
     let previous;
     try { previous = await loadSession(file, validated.origin, { allowExpired: true }); }
     catch (error) { if (error.code !== 'SESSION_NOT_FOUND') throw error; }
     if (previous && previous.expiresAt > Date.now()) throw new AuthError('SESSION_EXISTS', 'A live session is already saved. Run --logout before logging in again.');
+    if (previous) await removeSession(file, validated.origin, { expectedSessionId: previous.sessionId });
     const temporary = join(dirname(file), `.${basename(file)}.${randomUUID()}.tmp`);
     let handle;
     try {
@@ -144,25 +166,50 @@ export async function saveSession(file, record) {
       await handle.sync();
       await handle.close();
       handle = undefined;
-      // Recheck expiry immediately before publication; no network work runs
-      // while the exclusive lock is held.
       validateRecord(validated, validated.origin);
-      await rename(temporary, file);
+      // Publish the complete file without replacing an existing session. No
+      // lock file or owner survives this call. Keep link/unlink in one turn.
+      try { linkSync(temporary, file); unlinkSync(temporary); }
+      catch (error) {
+        if (error.code === 'EEXIST') throw new AuthError('SESSION_EXISTS', 'A session was saved concurrently. Its credential was preserved.');
+        throw error;
+      }
+      await publishGeneration(file, validated);
     } finally {
       await handle?.close();
       try { await unlink(temporary); } catch (error) { if (error.code !== 'ENOENT') throw error; }
     }
-  }, 'SESSION_SAVE_FAILED');
+  } catch (error) {
+    if (error instanceof AuthError) throw error;
+    throw new AuthError('SESSION_SAVE_FAILED', 'Cannot update private session storage. Check the path, owner and permissions.');
+  }
 }
 
 export async function removeSession(file, origin, { expectedSessionId } = {}) {
   await privateParent(file);
-  return locked(file, async () => {
+  try {
     const current = await loadSession(file, origin, { allowExpired: true });
     if (expectedSessionId !== undefined && current.sessionId !== expectedSessionId)
       throw new AuthError('SESSION_CHANGED', 'A newer session replaced the outgoing session. Its credential was preserved; repeat logout only if you intend to end that newer session.');
-    await unlink(file);
-  }, 'SESSION_REMOVE_FAILED');
+    // Revocation is tied to this credential generation, never to what happens
+    // to occupy the compatibility pathname later. Saved generations remain
+    // authoritative if a delayed unlink removes a newer compatibility copy.
+    const dir = sessionDirectory(file);
+    await mkdir(dir, { recursive: true, mode: 0o700 }); checkPrivate(await lstat(dir), 0o700, true);
+    const marker = join(dir, `${generationKey(current)}.revoked`);
+    let revoked;
+    try { revoked = await open(marker, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0), 0o600); await revoked.sync(); }
+    catch (error) { if (error.code !== 'EEXIST') throw error; checkPrivate(await lstat(marker), 0o600); }
+    finally { await revoked?.close(); }
+    await unlink(join(dir, `${generationKey(current)}.json`)).catch(error => { if (error.code !== 'ENOENT') throw error; });
+    let canonical;
+    try { canonical = await loadRecordFile(file, origin, { allowExpired: true }); }
+    catch (error) { if (error.code !== 'SESSION_NOT_FOUND') throw error; }
+    if (canonical?.sessionId === current.sessionId) await unlink(file).catch(error => { if (error.code !== 'ENOENT') throw error; });
+  } catch (error) {
+    if (error instanceof AuthError) throw error;
+    throw new AuthError('SESSION_REMOVE_FAILED', 'Cannot remove private session storage. Check the path, owner and permissions.');
+  }
 }
 
 function checkTransport(config) {

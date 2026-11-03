@@ -119,33 +119,33 @@ test('none does not expose page export tools even when a private state directory
   assert.ok(!names.includes('sync_page_to_knowledge')); assert.ok(!names.includes('get_page_knowledge_status'));
 });
 
-test('two connected page clients reuse the same enrollment and release leases after work', async t => {
+test('two connected page clients reuse the same enrollment and never create leases', async t => {
   const f = await fixture(t);
   const first = await f.call('sync_page_to_knowledge', { pageId });
-  assert.deepEqual(await readdir(join(f.stateDir, 'leases')), []);
+  assert.deepEqual(await readdir(join(f.stateDir, 'leases')).catch(e => { if (e.code === 'ENOENT') return []; throw e; }), []);
   const peer = await f.connect();
   const second = await peer.call('sync_page_to_knowledge', { pageId });
   assert.equal(second.bindingId, first.bindingId);
-  assert.deepEqual(await readdir(join(f.stateDir, 'leases')), []);
-  assert.deepEqual(await readdir(join(f.stateDir, 'operations')), []);
+  assert.deepEqual(await readdir(join(f.stateDir, 'leases')).catch(e => { if (e.code === 'ENOENT') return []; throw e; }), []);
+  assert.deepEqual(await readdir(join(f.stateDir, 'operations')).catch(e => { if (e.code === 'ENOENT') return []; throw e; }), []);
   assert.ok(f.calls.every(call => ['/api/users/me', '/api/pages/info', '/api/spaces/info'].includes(call.path)),
     'enrollment never writes Docmost');
 });
 
-test('the page update scope covers capture, the remote write and refresh across two processes', { timeout: 12000 }, async t => {
+test('an overlapping enrolled page update reports pending without holding a local lock', { timeout: 12000 }, async t => {
   const f = await fixture(t); await f.call('sync_page_to_knowledge', { pageId }); const peer = await f.connect();
-  const held = f.holdUpdate(), first = f.call('update_page', { pageId, content: 'First append', operation: 'append' }); let second;
+  const held = f.holdUpdate(), first = f.call('update_page', { pageId, content: 'First append', operation: 'append' });
   try {
     await held.entered;
-    assert.ok((await readdir(join(f.stateDir, 'leases'))).length > 0, 'the active remote operation still owns its page');
-    second = peer.call('update_page', { pageId, content: 'Second append', operation: 'append' });
-    await new Promise(r => setTimeout(r, 100));
-    assert.equal(f.calls.filter(c => c.path === '/api/pages/update').length, 1, 'the second process must wait through the first remote write');
-  } finally { held.release(); }
-  await first; const result = await second;
+    assert.deepEqual(await readdir(join(f.stateDir, 'leases')).catch(e => { if (e.code === 'ENOENT') return []; throw e; }), []);
+    const reply = (await peer.request('tools/call', { name: 'update_page', arguments: { pageId, content: 'Second append', operation: 'append' } })).result;
+    assert.equal(reply.isError, true);
+    assert.equal(JSON.parse(reply.content[0].text).error.code, 'SAVE_PENDING');
+    assert.equal(f.calls.filter(c => c.path === '/api/pages/update').length, 1);
+  } finally { held.release(); await first; }
+  const result = await peer.call('update_page', { pageId, content: 'Second append', operation: 'append' });
   assert.ok(result.content.includes('First append') && result.content.includes('Second append'));
-  assert.deepEqual(await readdir(join(f.stateDir, 'leases')), []);
-  assert.deepEqual(await readdir(join(f.stateDir, 'operations')), []);
+  assert.deepEqual(await readdir(join(f.stateDir, 'operations')).catch(e => { if (e.code === 'ENOENT') return []; throw e; }), []);
 });
 
 test('a failed knowledge preflight stays separate from a successful Docmost edit and cannot publish stale content', async t => {

@@ -80,15 +80,17 @@ test('page-source indexing completes every canonical parent through its space be
   assert.ok(f.persisted.some(value => value.mirror.pending?.indexCursor === 2));
 });
 
-test('an unknown ancestor submission is recovered at that exact cursor without replaying a completed page task', async () => {
+test('an unknown ancestor submission stays unconfirmed without replaying completed or ambiguous tasks', async () => {
   const f = fixture(); f.loseNextParentResponse();
   for (let turn = 0; turn < 5 && f.binding.mirror.pending?.phase !== 'submit_submitting'; turn++) await f.mirror.process(f.binding);
   assert.equal(f.binding.mirror.pending.phase, 'submit_submitting');
   assert.equal(f.binding.mirror.pending.indexCursor, 1);
   const resumed = structuredClone(f.binding); f.binding.mirror = resumed.mirror;
   await f.mirror.retry(f.binding); await settle(f);
-  assert.deepEqual(f.submissions.map(value => value.uri), indexUris);
-  assert.equal(f.binding.mirror.ancestorsReady, true);
+  assert.deepEqual(f.submissions.map(value => value.uri), indexUris.slice(0, 2));
+  assert.equal(f.binding.mirror.errorCode, 'OV_UNCONFIRMED');
+  assert.equal(f.binding.mirror.ancestorsReady, undefined);
+  assert.equal(f.binding.mirror.pending.taskId, undefined);
 });
 
 test('ancestor tasks refuse unknown direct files while unrelated child directory originals are never read', async () => {

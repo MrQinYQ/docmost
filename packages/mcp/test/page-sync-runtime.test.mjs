@@ -173,22 +173,19 @@ test('page export is idempotent and rejects identity changes before transferring
   assert.equal((await f.manager.pageStatus({ pageId })).error.code, 'IDENTITY_CHANGED');
 });
 
-test('page sync protects a live legacy owner without reading source or changing its lease', async t => {
+test('page sync ignores a live legacy lease and preserves the existing enrollment', async t => {
   const f = await fixture(t); const binding = await f.manager.syncPage({ pageId }); await settled(f.manager);
   const ledgerPath = join(f.config.knowledgeStateDir, 'bindings', binding.bindingId + '.json');
   const leasePath = join(f.config.knowledgeStateDir, 'leases', hash(`${f.config.origin}|${workspaceId}|${pageId}`) + '.json');
-  await eventually(async () => (await readdir(join(f.config.knowledgeStateDir, 'leases'))).length, value => value === 0);
+  await eventually(async () => (await readdir(join(f.config.knowledgeStateDir, 'leases')).catch(e => { if (e.code === 'ENOENT') return []; throw e; })).length, value => value === 0);
   const ownedLease = JSON.stringify({ pid: process.pid, nonce: 'live-legacy-page-owner' });
+  await mkdir(join(f.config.knowledgeStateDir, 'leases'), { recursive: true, mode: 0o700 });
   await writeFile(leasePath, ownedLease, { mode: 0o600 });
   await eventually(async () => JSON.parse(await readFile(ledgerPath, 'utf8')), value => value.mirror.state === 'synced' && !value.mirror.pending);
   const ledger = await readFile(ledgerPath, 'utf8');
   const duplicate = f.create(); await duplicate.start();
-  assert.equal((await duplicate.pageStatus({ pageId })).error.code, 'LEASE_BUSY');
-  const callCount = f.calls.length, writeCount = f.writes.length;
-  await assert.rejects(duplicate.syncPage({ pageId }), { code: 'LEASE_BUSY' });
-  assert.equal(f.calls.length, callCount, 'a process without the lease cannot read or publish this source');
-  assert.equal(f.writes.length, writeCount);
-  assert.equal(await readFile(ledgerPath, 'utf8'), ledger);
+  assert.equal((await duplicate.pageStatus({ pageId })).error, undefined);
+  assert.equal((await duplicate.syncPage({ pageId })).bindingId, binding.bindingId);
   assert.equal(await readFile(leasePath, 'utf8'), ownedLease);
 });
 

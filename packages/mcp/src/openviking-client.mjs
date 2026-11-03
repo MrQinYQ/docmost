@@ -189,7 +189,7 @@ export function createOpenVikingClient(config, { fetchImpl = globalThis.fetch } 
       failedRecords: count('failed_records'), unsupportedRecords: count('unsupported_records'),
       warnings: warnings.map(warning => warning.slice(0, 512)),
       ...(data.status === 'failed' && typeof data.error === 'string' && /^lock acquire timed out after \d+ms$/.test(data.error)
-        ? { failureCode: 'OV_TREE_BUSY' } : {}),
+        ? { failureCode: 'OV_CONFLICT' } : {}),
       ...(typeof data.error === 'string' && data.error ? { error: 'OpenViking task failed. Inspect its status through the configured deployment.' } : {}),
     };
   }

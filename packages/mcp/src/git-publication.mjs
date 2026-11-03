@@ -10,7 +10,7 @@ const gitBinding = binding => binding.source === 'git';
 /** Reuses the manager's one ledger, page queue, CAS and knowledge coordinator. */
 export function createGitPublication(context) {
   const { config, records, store, repositories, enqueue, controlQueue, requireWritable, requireRunning,
-    ensureLease, checkIdentity, persist, snapshot, remoteFor, upload, reconcile, setFailure,
+    checkCurrent, checkIdentity, persist, snapshot, remoteFor, upload, reconcile, setFailure,
     errorFor, identity, initialRemote, mirror, retryKnowledgeInline, unbind, dormantCount, sourceTaken, dormantPage } = context;
   const lookup = id => {
     if (!uuid(id)) throw errorFor('INVALID_REQUEST');
@@ -24,7 +24,7 @@ export function createGitPublication(context) {
     return root;
   };
   async function check(binding, root) {
-    await ensureLease(binding); await checkIdentity(binding);
+    await checkCurrent(binding); await checkIdentity(binding);
     return repositories.forBinding(binding, root);
   }
   const version = (source, commit, branch, filePath) => ({ commit, branch, blob: source.blob, hash: source.hash, filePath });
@@ -41,7 +41,7 @@ export function createGitPublication(context) {
       const operation = async () => {
         requireWritable();
         if (previous) {
-          await ensureLease(previous); await checkIdentity(previous);
+          await checkCurrent(previous); await checkIdentity(previous);
           if (gitBinding(previous)) await repositories.forBinding(previous, root);
           if (previous.pending || previous.pageRefresh || previous.git?.intent || previous.mirror?.pending || previous.mirror?.next || previous.mirror?.operation) throw errorFor('SAVE_PENDING');
         }
@@ -65,7 +65,7 @@ export function createGitPublication(context) {
           git: { version: 1, commonDir: repo.commonDir, objectFormat: repo.objectFormat, instance: repo.instance, prefix: repo.prefix, published: version(source, input.commit, input.branch, input.filePath) },
           _tail: previous?._tail ?? Promise.resolve() };
         delete binding.errorCode; delete binding.pageRefresh; delete binding.pending;
-        if (!previous) await ensureLease(binding);
+        if (!previous) await checkCurrent(binding);
         try {
           if (mirror) { await mirror.prepare(binding, source); mirror.confirm(binding, { localHash: source.hash, proposedRevision: remote.revision }); }
           await persist(binding);
@@ -175,7 +175,7 @@ export function createGitPublication(context) {
     }
     return enqueue(binding, async () => {
       if (action === 'confirm-repository') {
-        await ensureLease(binding); await checkIdentity(binding);
+        await checkCurrent(binding); await checkIdentity(binding);
         const next = { ...binding, git: await repositories.confirm(binding, repositoryRoot) };
         await persist(next); binding.git = next.git;
         if (binding.errorCode === 'GIT_IDENTITY_UNCONFIRMED') delete binding.errorCode;
